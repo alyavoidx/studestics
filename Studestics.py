@@ -76,7 +76,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -18740,6 +18740,23 @@ class StudesticsApp(tk.Tk):
             code = archive.read(min(names, key=len))
 
         compile(code, script.name, "exec")
+
+        # The file inside the release must really be the new version,
+        # otherwise the app would restart into the same version again.
+        import re
+
+        found = re.search(
+            rb'^VERSION\s*=\s*["\']([^"\']+)["\']', code, re.MULTILINE
+        )
+
+        packed = found.group(1).decode() if found else "?"
+
+        if version_tuple(packed) != version_tuple(info["tag"]):
+            raise RuntimeError(
+                f"The {info['tag']} release contains {script.name} "
+                f"version {packed}. Re-upload the updated file to the "
+                "repo and recreate the release."
+            )
 
         backup = script.with_name(script.name + ".bak")
 
