@@ -76,7 +76,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -2967,10 +2967,85 @@ class StudesticsApp(tk.Tk):
                 exc
             )
 
+    def _paint_titlebar(self, window):
+        """Give a window's title bar the theme colours, so it stays
+        dark (or light) when the window isn't the active one."""
+
+        if sys.platform != "win32":
+            return
+
+        try:
+
+            if window.overrideredirect():
+                return
+
+            import ctypes
+
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id()) or \
+                window.winfo_id()
+
+            def colour(hex_text):
+
+                hex_text = hex_text.lstrip("#")
+
+                red, green, blue = (
+                    int(hex_text[i:i + 2], 16) for i in (0, 2, 4)
+                )
+
+                return ctypes.c_int(red | (green << 8) | (blue << 16))
+
+            red, green, blue = (
+                int(BG.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)
+            )
+
+            dark = ctypes.c_int(
+                1 if (red * 299 + green * 587 + blue * 114) / 1000 < 128
+                else 0
+            )
+
+            dwm = ctypes.windll.dwmapi
+
+            for attribute, value in (
+                (20, dark),          # dark title bar
+                (35, colour(BG)),    # caption colour
+                (34, colour(BORDER)),  # window border
+                (36, colour(TEXT))   # caption text
+            ):
+
+                dwm.DwmSetWindowAttribute(
+                    hwnd,
+                    attribute,
+                    ctypes.byref(value),
+                    4
+                )
+
+        except Exception:
+            pass
+
+    def _title_bar_hook(self):
+
+        def on_map(event):
+
+            window = event.widget
+
+            try:
+
+                if window.winfo_toplevel() is window:
+                    window.after(20, lambda: self._paint_titlebar(window))
+
+            except Exception:
+                pass
+
+        self.bind_all("<Map>", on_map, add="+")
+
     def finish_startup(self):
 
         if not self.initialized:
             return
+
+        self._title_bar_hook()
+
+        self._paint_titlebar(self)
 
         self.show_page(
             "Dashboard"
@@ -18440,6 +18515,21 @@ class StudesticsApp(tk.Tk):
                 if not manual and skipped == tag:
                     return
 
+                # Already downloaded and swapped in earlier this run.
+                if getattr(self, "_update_ready_tag", "") == tag:
+
+                    say(f"{tag} is ready. Restart to use it.", GREEN)
+
+                    return
+
+                if not self._can_self_update(info):
+
+                    say(f"Version {tag} is available.", YELLOW)
+
+                    self.after(0, lambda: self.show_update_popup(info))
+
+                    return
+
                 say(f"Version {tag} is available.", YELLOW)
 
                 self.after(0, lambda: self.show_update_popup(info))
@@ -18468,7 +18558,204 @@ class StudesticsApp(tk.Tk):
         if not self._quitting:
             self.after(12 * 3600 * 1000, self._auto_update_tick)
 
-    def show_update_popup(self, info):
+    def _clean_notes(self, text, max_lines=7):
+        """Release notes are written in Markdown; show them as plain
+        lines."""
+
+        lines = []
+
+        for raw in str(text or "").splitlines():
+
+            line = raw.strip()
+
+            if not line:
+                continue
+
+            line = line.lstrip("#").strip()
+            line = line.replace("**", "").replace("`", "")
+
+            if line.startswith(("- ", "* ")):
+                line = "•  " + line[2:]
+
+            lines.append(line)
+
+        if not lines:
+            return "No release notes."
+
+        if len(lines) > max_lines:
+            lines = lines[:max_lines] + ["…"]
+
+        return "\n".join(lines)
+
+    def _can_self_update(self, info):
+        """True for the packaged .exe when the release carries one."""
+
+        if getattr(sys, "frozen", False):
+
+            return info.get("url", "").startswith(
+                f"https://github.com/{UPDATE_REPO}/releases/download/"
+            )
+
+        # Running as a script: the update replaces Studestics.py.
+        return Path(__file__).resolve().suffix.lower() in (".py", ".pyw")
+
+    def _fetch_and_swap(self, info, progress=None):
+        """Download the new .exe, check it, and put it in place of the
+        running one (Windows lets a running .exe be renamed, not
+        overwritten). The next start is the new version. Runs in a
+        thread; raises if anything goes wrong, leaving the old .exe."""
+
+        import hashlib
+        import urllib.request
+
+        if not getattr(sys, "frozen", False):
+            return self._fetch_source(info, progress)
+
+        exe = Path(sys.executable)
+
+        fresh = exe.with_name(exe.name + ".new")
+
+        try:
+
+            request = urllib.request.Request(
+                info["url"],
+                headers={"User-Agent": "Studestics"}
+            )
+
+            digest = hashlib.sha256()
+
+            done = 0
+
+            last_pct = -1
+
+            with urllib.request.urlopen(request, timeout=30) as reply:
+
+                total = int(
+                    reply.headers.get("Content-Length")
+                    or info.get("size")
+                    or 0
+                )
+
+                with open(fresh, "wb") as handle:
+
+                    while True:
+
+                        chunk = reply.read(262144)
+
+                        if not chunk:
+                            break
+
+                        handle.write(chunk)
+                        digest.update(chunk)
+                        done += len(chunk)
+
+                        if total and progress:
+
+                            pct = done * 100 // total
+
+                            if pct != last_pct:
+
+                                last_pct = pct
+                                progress(pct)
+
+            if info.get("size") and done != info["size"]:
+                raise RuntimeError("The download was incomplete.")
+
+            expected = info.get("digest", "").lower()
+
+            if expected.startswith("sha256:") and (
+                digest.hexdigest() != expected[7:]
+            ):
+                raise RuntimeError("The download didn't match its checksum.")
+
+            backup = exe.with_name(exe.name + ".old")
+
+            try:
+                backup.unlink()
+            except Exception:
+                pass
+
+            os.replace(exe, backup)
+
+            try:
+                os.replace(fresh, exe)
+            except Exception:
+                os.replace(backup, exe)
+                raise
+
+        except Exception:
+
+            try:
+                fresh.unlink()
+            except Exception:
+                pass
+
+            raise
+
+    def _fetch_source(self, info, progress=None):
+        """Script install: download the release's source, take
+        Studestics.py out of it and put it in place of this file (the
+        old one is kept as .bak)."""
+
+        import io
+        import urllib.request
+        import zipfile
+
+        script = Path(__file__).resolve()
+
+        request = urllib.request.Request(
+            f"https://github.com/{UPDATE_REPO}/archive/refs/tags/"
+            f"{info['tag']}.zip",
+            headers={"User-Agent": "Studestics"}
+        )
+
+        buffer = io.BytesIO()
+
+        with urllib.request.urlopen(request, timeout=30) as reply:
+
+            total = int(reply.headers.get("Content-Length") or 0)
+
+            while True:
+
+                chunk = reply.read(65536)
+
+                if not chunk:
+                    break
+
+                buffer.write(chunk)
+
+                if total and progress:
+                    progress(buffer.tell() * 100 // total)
+
+        with zipfile.ZipFile(buffer) as archive:
+
+            names = [
+                name for name in archive.namelist()
+                if name.rsplit("/", 1)[-1].lower() == script.name.lower()
+            ]
+
+            if not names:
+                raise RuntimeError(f"{script.name} isn't in this release.")
+
+            code = archive.read(min(names, key=len))
+
+        compile(code, script.name, "exec")
+
+        backup = script.with_name(script.name + ".bak")
+
+        try:
+            backup.write_bytes(script.read_bytes())
+        except Exception:
+            pass
+
+        temp = script.with_name(script.name + ".new")
+
+        temp.write_bytes(code)
+
+        os.replace(temp, script)
+
+    def _update_window(self, title, width=580):
+        """A themed popup shell: returns (window, body, buttons)."""
 
         old = getattr(self, "_update_popup", None)
 
@@ -18483,57 +18770,78 @@ class StudesticsApp(tk.Tk):
 
         self._update_popup = win
 
-        win.title("Update available")
+        win.title(title)
         win.configure(bg=BG)
         win.resizable(False, False)
         win.transient(self)
 
-        self.center_window(win, 520, 400)
+        buttons = tk.Frame(win, bg=BG)
+
+        buttons.pack(side="bottom", fill="x", padx=28, pady=(10, 22))
+
+        tk.Frame(win, bg=BORDER, height=1).pack(side="bottom", fill="x")
+
+        body = tk.Frame(win, bg=BG)
+
+        body.pack(fill="both", expand=True, padx=28)
+
+        return win, body, buttons
+
+    def _finish_update_window(self, win, width=580):
+
+        win.update_idletasks()
+
+        self.center_window(win, width, max(280, win.winfo_reqheight() + 8))
+
+    def show_update_popup(self, info, reason=""):
+        """For when the app can't update itself (running from source,
+        or the release has no .exe), or when the automatic update
+        failed: explains why and opens the download page."""
+
+        win, body, buttons = self._update_window("Update available")
 
         tk.Label(
-            win,
+            body,
             text="A new version is out",
             bg=BG,
             fg=TEXT,
             font=("Segoe UI", 18, "bold")
-        ).pack(anchor="w", padx=28, pady=(24, 2))
+        ).pack(anchor="w", pady=(24, 2))
 
         tk.Label(
-            win,
+            body,
             text=f"Studestics {info['tag']}  (you have v{VERSION})",
             bg=BG,
             fg=PURPLE_HOVER,
             font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", padx=28)
-
-        notes = info["notes"] or "No release notes."
-
-        if len(notes) > 420:
-            notes = notes[:420].rstrip() + "…"
+        ).pack(anchor="w")
 
         tk.Label(
-            win,
-            text=notes,
+            body,
+            text=self._clean_notes(info["notes"]),
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 10),
-            wraplength=460,
+            wraplength=510,
             justify="left"
-        ).pack(anchor="w", padx=28, pady=(14, 0))
+        ).pack(anchor="w", pady=(14, 0))
 
-        status = tk.Label(
-            win,
-            text="",
-            bg=BG,
-            fg=MUTED_2,
-            font=("Segoe UI", 9)
-        )
+        can_install = self._can_self_update(info)
 
-        status.pack(anchor="w", padx=28, pady=(10, 0))
+        if not reason and not can_install:
+            reason = "This release has no Studestics.exe attached yet."
 
-        buttons = tk.Frame(win, bg=BG)
+        if reason:
 
-        buttons.pack(side="bottom", fill="x", padx=28, pady=(0, 22))
+            tk.Label(
+                body,
+                text=reason,
+                bg=BG,
+                fg=YELLOW,
+                font=("Segoe UI", 9),
+                wraplength=510,
+                justify="left"
+            ).pack(anchor="w", pady=(12, 0))
 
         def open_page():
 
@@ -18541,10 +18849,15 @@ class StudesticsApp(tk.Tk):
 
                 import webbrowser
 
-                webbrowser.open(info["page"] or f"https://github.com/{UPDATE_REPO}/releases/latest")
+                webbrowser.open(
+                    info["page"]
+                    or f"https://github.com/{UPDATE_REPO}/releases/latest"
+                )
 
             except Exception:
                 pass
+
+            win.destroy()
 
         def skip():
 
@@ -18552,18 +18865,137 @@ class StudesticsApp(tk.Tk):
 
             win.destroy()
 
-        can_install = (
-            getattr(sys, "frozen", False)
-            and info["url"].startswith(
-                f"https://github.com/{UPDATE_REPO}/releases/download/"
-            )
+        status = tk.Label(
+            body,
+            text="",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10, "bold")
         )
+
+        status.pack(anchor="w", pady=(10, 0))
+
+        def set_status(text, colour=MUTED):
+
+            def apply():
+
+                try:
+                    status.configure(text=text, fg=colour)
+                except Exception:
+                    pass
+
+            self.after(0, apply)
+
+        def update_now():
+
+            go.configure(state="disabled")
+            later.configure(state="disabled")
+            skip_btn.configure(state="disabled")
+
+            set_status("Downloading\u2026  0%")
+
+            def work():
+
+                try:
+
+                    self._fetch_and_swap(
+                        info,
+                        lambda pct: set_status(f"Downloading\u2026  {pct}%")
+                    )
+
+                except Exception as exc:
+
+                    def failed():
+
+                        set_status(f"Update failed: {exc}", RED)
+
+                        go.configure(state="normal", text="Try again")
+                        later.configure(state="normal")
+                        skip_btn.configure(state="normal")
+
+                    self.after(0, failed)
+
+                    return
+
+                set_status("Updated. Restarting\u2026", GREEN)
+
+                self.after(700, self.restart_app)
+
+            threading.Thread(target=work, daemon=True).start()
 
         go = self.make_button(
             buttons,
             "Update now" if can_install else "Open download page",
-            lambda: install() if can_install else (open_page(), win.destroy()),
-            width=18
+            update_now if can_install else open_page,
+            width=14 if can_install else 19
+        )
+
+        go.configure(selected=True)
+
+        go.pack(side="right")
+
+        later = self.make_button(
+            buttons,
+            "Later",
+            win.destroy,
+            width=8
+        )
+
+        later.pack(side="right", padx=(0, 10))
+
+        skip_btn = self.make_button(
+            buttons,
+            "Skip this version",
+            skip,
+            width=15
+        )
+
+        skip_btn.pack(side="left")
+
+        self._finish_update_window(win)
+
+    def show_update_ready_popup(self, info):
+        """The new version is already downloaded and in place; it only
+        needs a restart."""
+
+        win, body, buttons = self._update_window("Update ready")
+
+        tk.Label(
+            body,
+            text="Update ready",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 18, "bold")
+        ).pack(anchor="w", pady=(24, 2))
+
+        tk.Label(
+            body,
+            text=(
+                f"Studestics {info['tag']} was downloaded in the "
+                "background. Restart to start using it."
+            ),
+            bg=BG,
+            fg=PURPLE_HOVER,
+            font=("Segoe UI", 10, "bold"),
+            wraplength=510,
+            justify="left"
+        ).pack(anchor="w")
+
+        tk.Label(
+            body,
+            text=self._clean_notes(info["notes"]),
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wraplength=510,
+            justify="left"
+        ).pack(anchor="w", pady=(14, 0))
+
+        go = self.make_button(
+            buttons,
+            "Restart now",
+            lambda: (win.destroy(), self.restart_app()),
+            width=14
         )
 
         go.configure(selected=True)
@@ -18572,136 +19004,12 @@ class StudesticsApp(tk.Tk):
 
         self.make_button(
             buttons,
-            "Later",
+            "Restart later",
             win.destroy,
-            width=8
+            width=14
         ).pack(side="right", padx=(0, 10))
 
-        self.make_button(
-            buttons,
-            "Skip this version",
-            skip,
-            width=16
-        ).pack(side="left")
-
-        def set_status(text, color=MUTED_2):
-
-            try:
-
-                if status.winfo_exists():
-                    status.configure(text=text, fg=color)
-
-            except Exception:
-                pass
-
-        def install():
-
-            go.configure(state="disabled")
-
-            def worker():
-
-                import hashlib
-                import urllib.request
-
-                exe = Path(sys.executable)
-
-                fresh = exe.with_name(exe.name + ".new")
-
-                try:
-
-                    request = urllib.request.Request(
-                        info["url"],
-                        headers={"User-Agent": "Studestics"}
-                    )
-
-                    digest = hashlib.sha256()
-
-                    done = 0
-
-                    with urllib.request.urlopen(request, timeout=30) as reply:
-
-                        total = int(
-                            reply.headers.get("Content-Length") or info["size"] or 0
-                        )
-
-                        with open(fresh, "wb") as handle:
-
-                            while True:
-
-                                chunk = reply.read(262144)
-
-                                if not chunk:
-                                    break
-
-                                handle.write(chunk)
-                                digest.update(chunk)
-                                done += len(chunk)
-
-                                if total:
-
-                                    self.after(
-                                        0,
-                                        lambda d=done, t=total: set_status(
-                                            f"Downloading…  {d * 100 // t}%"
-                                        )
-                                    )
-
-                    if info["size"] and done != info["size"]:
-                        raise RuntimeError("The download was incomplete.")
-
-                    expected = info["digest"].lower()
-
-                    if expected.startswith("sha256:") and (
-                        digest.hexdigest() != expected[7:]
-                    ):
-                        raise RuntimeError("The download didn't match its checksum.")
-
-                    # A running .exe can be renamed but not overwritten.
-                    backup = exe.with_name(exe.name + ".old")
-
-                    try:
-                        backup.unlink()
-                    except Exception:
-                        pass
-
-                    os.replace(exe, backup)
-
-                    try:
-                        os.replace(fresh, exe)
-                    except Exception:
-                        os.replace(backup, exe)
-                        raise
-
-                except Exception as exc:
-
-                    try:
-                        fresh.unlink()
-                    except Exception:
-                        pass
-
-                    def failed(message=str(exc)):
-
-                        set_status(
-                            "Couldn't update automatically. Opening the "
-                            "download page instead.",
-                            RED
-                        )
-
-                        open_page()
-
-                        try:
-                            go.configure(state="normal")
-                        except Exception:
-                            pass
-
-                    self.after(0, failed)
-
-                    return
-
-                self.after(0, lambda: set_status("Restarting…", GREEN))
-                self.after(600, self.restart_app)
-
-            threading.Thread(target=worker, daemon=True).start()
+        self._finish_update_window(win)
 
     def _build_update_card(self):
 
