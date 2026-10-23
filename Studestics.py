@@ -74,6 +74,11 @@ except Exception:
 
 APP_NAME = "Studestics"
 
+# Bump VERSION for every release you publish on GitHub; the app compares
+# it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
+VERSION = "1.1.1"
+UPDATE_REPO = "alyavoidx/studestics"
+
 APP_DIR = Path.home() / ".studestics"
 DB_PATH = APP_DIR / "studestics.db"
 ATTACH_DIR = APP_DIR / "attachments"
@@ -87,6 +92,15 @@ ATTACH_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 THEMES = {
+    "Light": {
+        "bg": "#F3F3F8", "sidebar": "#E9E9F1", "panel": "#FFFFFF",
+        "panel2": "#F0F0F6", "border": "#D8D8E4", "text": "#1C1B26",
+        "muted": "#5C5C70", "muted2": "#8C8C9E",
+        "accent": "#7C3AED", "accent_hover": "#6D28D9",
+        "light": True,
+        "green": "#059669", "red": "#DC2626",
+        "yellow": "#D97706", "blue": "#2563EB"
+    },
     "Purple": {
         "bg": "#090909", "sidebar": "#0D0D0D", "panel": "#111111",
         "panel2": "#171717", "border": "#252525", "text": "#FFFFFF",
@@ -176,10 +190,12 @@ PURPLE = _THEME["accent"]
 PURPLE_HOVER = _THEME["accent_hover"]
 PURPLE_LIGHT = _theme_mix(PURPLE_HOVER, "#FFFFFF", 0.25)
 
-GREEN = "#34D399"
-RED = "#F87171"
-YELLOW = "#FBBF24"
-BLUE = "#60A5FA"
+IS_LIGHT = bool(_THEME.get("light"))
+
+GREEN = _THEME.get("green", "#34D399")
+RED = _THEME.get("red", "#F87171")
+YELLOW = _THEME.get("yellow", "#FBBF24")
+BLUE = _THEME.get("blue", "#60A5FA")
 
 # Hover color for destructive buttons (Delete)
 DANGER_HOVER = "#DC2626"
@@ -190,7 +206,7 @@ HOVER_BG = _theme_mix(PANEL_2, TEXT, 0.07)
 CHIP_BG = _theme_mix(PANEL_2, TEXT, 0.045)
 TRACK = _theme_mix(PANEL_2, TEXT, 0.05)
 SIDEBAR_HOVER = _theme_mix(SIDEBAR, TEXT, 0.05)
-DEEP = _theme_mix(BG, "#000000", 0.4)
+DEEP = _theme_mix(BG, "#000000", 0.07 if IS_LIGHT else 0.4)
 COMPLETED_BG = _theme_mix(BG, GREEN, 0.06)
 NAV_TEXT = _theme_mix(TEXT, BG, 0.18)
 NAV_ICON = _theme_mix(MUTED, TEXT, 0.35)
@@ -200,6 +216,9 @@ ACCENT_RGB = _theme_rgb(PURPLE_HOVER)
 ACCENT_LIGHT_RGB = _theme_rgb(PURPLE_LIGHT)
 
 # Neutral flat pills (Edit, Pause...) as RGB tuples.
+DANGER_FILL = (254, 226, 226) if IS_LIGHT else (42, 22, 24)
+DANGER_EDGE = (248, 180, 180) if IS_LIGHT else (112, 42, 46)
+
 NEUTRAL_FILL = _theme_rgb(_theme_mix(PANEL_2, TEXT, 0.06))
 NEUTRAL_EDGE = _theme_rgb(_theme_mix(PANEL_2, TEXT, 0.17))
 NEUTRAL_FILL_HOVER = _theme_rgb(_theme_mix(PANEL_2, TEXT, 0.12))
@@ -211,7 +230,7 @@ NEUTRAL_EDGE_HOVER = _theme_rgb(_theme_mix(PANEL_2, TEXT, 0.30))
 # for a routine version bump. Pinned versions are still kept below as a
 # fallback in case the alias itself ever has an issue, or Google is slow
 # to update it right after a deprecation.
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # If the primary model is ever unavailable, the app tries these in order
 # before giving up — so a single Google-side deprecation or alias hiccup
@@ -225,10 +244,179 @@ AI_MAX_OUTPUT_TOKENS = 400
 AI_RESET_AFTER_TURNS = 8
 
 GEMINI_MODEL_FALLBACKS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-flash-latest",
     "gemini-3.8-flash",
-    "gemini-3.5-flash",
 ]
+
+
+# ============================================================
+# ALARM SOUNDS
+# ============================================================
+
+SOUNDS_DIR = APP_DIR / "sounds"
+
+SOUND_PRESETS = ("Classic", "Chime", "Digital", "Gentle", "Pulse")
+
+_SOUND_REV = "2"
+
+
+def _sound_samples(name, rate=22050):
+    """The samples (floats, -1..1) of one preset, about 1.5 s long."""
+
+    out = []
+
+    def silence(seconds):
+
+        out.extend([0.0] * int(rate * seconds))
+
+    def tone(freq, seconds, volume=0.55, decay=0.0, soft=False,
+             harmonics=()):
+
+        count = int(rate * seconds)
+
+        fade = max(1, int(rate * 0.006))
+
+        for i in range(count):
+
+            t = i / rate
+
+            value = math.sin(2 * math.pi * freq * t)
+
+            for mult, amount in harmonics:
+                value += amount * math.sin(2 * math.pi * freq * mult * t)
+
+            if decay:
+                value *= math.exp(-decay * t)
+
+            envelope = 1.0
+
+            if soft:
+
+                envelope = math.sin(math.pi * i / max(1, count - 1)) ** 0.7
+
+            else:
+
+                if i < fade:
+                    envelope = i / fade
+                elif i > count - fade:
+                    envelope = (count - i) / fade
+
+            out.append(value * volume * envelope)
+
+    if name == "Classic":
+
+        for _ in range(3):
+
+            tone(1400, 0.16)
+            tone(1000, 0.16)
+            silence(0.15)
+
+        silence(0.25)
+
+    elif name == "Chime":
+
+        # Three bell notes that ring into each other.
+        mix = [0.0] * int(rate * 2.2)
+
+        for start, freq in ((0.0, 1047), (0.28, 1319), (0.56, 1568)):
+
+            note = []
+
+            saved = out[:]
+
+            out.clear()
+
+            tone(freq, 1.5, 0.4, decay=2.6, harmonics=((2.0, 0.35), (3.0, 0.12)))
+
+            note = out[:]
+
+            out[:] = saved
+
+            offset = int(rate * start)
+
+            for i, value in enumerate(note):
+
+                if offset + i < len(mix):
+                    mix[offset + i] += value
+
+        out.extend(mix)
+
+    elif name == "Digital":
+
+        for _ in range(6):
+
+            tone(2000, 0.07, 0.5)
+            silence(0.07)
+
+        silence(0.5)
+
+    elif name == "Gentle":
+
+        tone(660, 0.5, 0.5, soft=True, harmonics=((2.0, 0.2),))
+        tone(880, 0.6, 0.5, soft=True, harmonics=((2.0, 0.2),))
+        silence(0.4)
+
+    else:  # Pulse
+
+        for _ in range(4):
+
+            tone(520, 0.22, 0.55, soft=True)
+            silence(0.1)
+
+        silence(0.3)
+
+    return out
+
+
+def sound_preset_path(name):
+    """Makes the preset's .wav the first time it is needed."""
+
+    import wave
+    import array
+
+    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    path = SOUNDS_DIR / f"{name.lower()}_v{_SOUND_REV}.wav"
+
+    if not path.exists():
+
+        samples = _sound_samples(name)
+
+        data = array.array(
+            "h",
+            [max(-32767, min(32767, int(v * 32767))) for v in samples]
+        )
+
+        with wave.open(str(path), "wb") as handle:
+
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(22050)
+            handle.writeframes(data.tobytes())
+
+    return path
+
+
+def mci_send(command):
+    """Windows' built-in media player (plays wav, mp3, wma, m4a)."""
+
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(255)
+
+    error = ctypes.windll.winmm.mciSendStringW(command, buffer, 254, 0)
+
+    return error, buffer.value
+
+
+def version_tuple(text):
+    """'v1.2.3' -> (1, 2, 3); anything unreadable -> (0, 0, 0)."""
+
+    numbers = [int(n) for n in re.findall(r"\d+", str(text).split("-")[0])]
+
+    return tuple((numbers + [0, 0, 0])[:3])
 
 
 # ============================================================
@@ -2224,53 +2412,132 @@ def set_startup(enabled):
                 pass
 
 
-def app_icon_image(size=256):
-    """The app's icon: a purple rounded square with a white S. Used
-    for the window, the taskbar and the tray."""
+_LOGO_CACHE = {}
 
-    big = size * 4
+
+def _catmull_rom(points, per=24):
+    """A smooth curve through the given points."""
+
+    pts = [points[0]] + list(points) + [points[-1]]
+
+    out = []
+
+    for i in range(1, len(pts) - 2):
+
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1], pts[i + 2]
+
+        for k in range(per):
+
+            t = k / per
+            t2, t3 = t * t, t * t * t
+
+            out.append(tuple(
+                0.5 * (
+                    (2 * p1[j])
+                    + (-p0[j] + p2[j]) * t
+                    + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2
+                    + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3
+                )
+                for j in (0, 1)
+            ))
+
+    out.append(points[-1])
+
+    return out
+
+
+def app_icon_image(size=256):
+    """The app's logo: a purple gradient rounded square with a white,
+    softly curved S and a small sparkle. Used for the window, the
+    taskbar, the tray, the sidebar and the welcome page."""
+
+    key = int(size)
+
+    if key in _LOGO_CACHE:
+        return _LOGO_CACHE[key].copy()
+
+    big = max(48, size * 3)
+
+    u = big / 100.0
+
+    c1, c2, c3, c4 = (
+        (109, 40, 217), (132, 80, 230), (150, 108, 240), (167, 139, 250)
+    )
+
+    corners = Image.new("RGBA", (2, 2))
+
+    corners.putpixel((0, 0), c1 + (255,))
+    corners.putpixel((1, 0), c2 + (255,))
+    corners.putpixel((0, 1), c3 + (255,))
+    corners.putpixel((1, 1), c4 + (255,))
+
+    gradient = corners.resize((big, big), Image.BILINEAR)
+
+    mask = Image.new("L", (big, big), 0)
+
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, big - 1, big - 1],
+        radius=int(big * 0.24),
+        fill=255
+    )
 
     img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
 
-    draw = ImageDraw.Draw(img)
+    img.paste(gradient, (0, 0), mask)
 
-    draw.rounded_rectangle(
-        [0, 0, big - 1, big - 1],
-        radius=int(big * 0.24),
-        fill=(124, 58, 237, 255)
-    )
+    points = [
+        (71, 30), (60, 17), (45, 14), (31, 21), (29, 35), (40, 45),
+        (58, 52), (70, 61), (69, 76), (56, 85), (41, 85), (27, 77)
+    ]
 
-    font = None
+    path = [(x * u, y * u) for x, y in _catmull_rom(points)]
 
-    for name in (
-        "segoeuib.ttf",
-        "C:/Windows/Fonts/segoeuib.ttf",
-        "arialbd.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    ):
+    width = 12.5 * u
 
-        try:
+    shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
 
-            font = ImageFont.truetype(name, int(big * 0.62))
+    sd = ImageDraw.Draw(shadow)
 
-            break
+    for x, y in path:
 
-        except Exception:
+        sd.ellipse(
+            [x - width / 2, y - width / 2 + 2 * u,
+             x + width / 2, y + width / 2 + 2 * u],
+            fill=(40, 10, 90, 70)
+        )
 
-            continue
+    img.alpha_composite(shadow)
 
-    if font is None:
-        font = ImageFont.load_default()
+    d = ImageDraw.Draw(img)
 
-    draw.text(
-        (big / 2, big / 2 + big * 0.02),
-        "S",
-        font=font,
-        fill=(255, 255, 255, 255),
-        anchor="mm"
-    )
+    for x, y in path:
 
-    return img.resize((size, size), Image.LANCZOS)
+        d.ellipse(
+            [x - width / 2, y - width / 2, x + width / 2, y + width / 2],
+            fill=(255, 255, 255, 255)
+        )
+
+    cx, cy, r = 81 * u, 17 * u, 8.5 * u
+
+    star = []
+
+    for i in range(8):
+
+        angle = math.radians(-90 + i * 45)
+
+        radius = r if i % 2 == 0 else r * 0.28
+
+        star.append(
+            (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+        )
+
+    d.polygon(star, fill=(254, 240, 138, 255))
+
+    result = img.resize((size, size), Image.LANCZOS)
+
+    _LOGO_CACHE[key] = result
+
+    return result.copy()
 
 
 class RoundedButton:
@@ -2359,7 +2626,7 @@ class RoundedButton:
         if self.state == "disabled":
             bg_color, fg_color = PANEL_2, MUTED_2
         elif self.selected or self.hovered:
-            bg_color, fg_color = self.active_color, TEXT
+            bg_color, fg_color = self.active_color, "#FFFFFF"
         else:
             bg_color, fg_color = PANEL_2, TEXT
 
@@ -2713,6 +2980,22 @@ class StudesticsApp(tk.Tk):
 
         profile = self.db.get_profile()
 
+        # Clean up after a self-update, then look for a newer release.
+        try:
+
+            if getattr(sys, "frozen", False):
+                Path(sys.executable + ".old").unlink(missing_ok=True)
+
+        except Exception:
+            pass
+
+        self.after(8000, self._auto_update_tick)
+
+        # Load Gemini in the background a few seconds after a normal
+        # start, so the first chat message doesn't wait for it.
+        if "--background" not in sys.argv:
+            self.after(4000, self._warm_gemini)
+
         # Launched by Windows at sign-in: start quietly in the tray
         # (main() already kept the window hidden, so nothing flashes).
         if "--background" in sys.argv:
@@ -2735,6 +3018,24 @@ class StudesticsApp(tk.Tk):
             )
 
     def load_preferences(self):
+
+        # One-time: older installs were saved on "gemini-flash-latest",
+        # which can take a minute to answer. Move them to the fast
+        # model; a model they picked themselves is left alone.
+        try:
+
+            if self.db.get_setting("gemini_model_v2", "") != "1":
+
+                if self.db.get_setting(
+                    "gemini_model", ""
+                ) in ("", "gemini-flash-latest"):
+
+                    self.db.set_setting("gemini_model", GEMINI_MODEL)
+
+                self.db.set_setting("gemini_model_v2", "1")
+
+        except Exception:
+            pass
 
         try:
 
@@ -3055,7 +3356,14 @@ class StudesticsApp(tk.Tk):
             self.sidebar_user_sub
         )
 
+        chip_state = {"color": SIDEBAR}
+
         def chip_color(color):
+
+            if chip_state["color"] == color:
+                return
+
+            chip_state["color"] = color
 
             for w in chip_widgets:
 
@@ -3063,6 +3371,23 @@ class StudesticsApp(tk.Tk):
                     w.configure(bg=color)
                 except Exception:
                     pass
+
+            # The round photo is drawn with its corners in the
+            # background colour, so it has to be redrawn in the new one
+            # or a dark square shows around it.
+            try:
+
+                profile = self.db.get_profile()
+
+                letter = (
+                    (profile["name"].strip()[:1] or "?").upper()
+                    if profile else "?"
+                )
+
+                self._avatar_paint(self.sidebar_avatar, 34, letter, color)
+
+            except Exception:
+                pass
 
         for w in chip_widgets:
 
@@ -5824,7 +6149,7 @@ class StudesticsApp(tk.Tk):
                         ACCENT_LIGHT_RGB, ACCENT_LIGHT_RGB),
             "neutral": (NEUTRAL_FILL, NEUTRAL_EDGE,
                         NEUTRAL_FILL_HOVER, NEUTRAL_EDGE_HOVER),
-            "danger": ((42, 22, 24), (112, 42, 46),
+            "danger": (DANGER_FILL, DANGER_EDGE,
                        (220, 38, 38), (220, 38, 38))
         }[kind]
 
@@ -6137,7 +6462,7 @@ class StudesticsApp(tk.Tk):
                 anchor="nw",
                 text=fit(title, title_font, max_text_w),
                 font=title_font,
-                fill=GREEN if is_completed else "#FFFFFF",
+                fill=GREEN if is_completed else ("#FFFFFF" if has_photo else TEXT),
                 tags="card_text"
             )
 
@@ -6214,13 +6539,20 @@ class StudesticsApp(tk.Tk):
                     text=actions[i]["label"],
                     font=label_font,
                     fill=(
-                        "#F87171"
-                        if (
-                            not has_photo
-                            and actions[i]["kind"] == "danger"
-                            and state["hover"] != i
+                        "#FFFFFF"
+                        if (has_photo or actions[i]["kind"] == "primary")
+                        else (
+                            RED
+                            if (
+                                actions[i]["kind"] == "danger"
+                                and state["hover"] != i
+                            )
+                            else (
+                                "#FFFFFF"
+                                if actions[i]["kind"] == "danger"
+                                else TEXT
+                            )
                         )
-                        else "#FFFFFF"
                     ),
                     tags="card_text"
                 )
@@ -7886,13 +8218,20 @@ class StudesticsApp(tk.Tk):
                     text=actions[i]["label"],
                     font=label_font,
                     fill=(
-                        "#F87171"
-                        if (
-                            not has_photo
-                            and actions[i]["kind"] == "danger"
-                            and state["hover"] != i
+                        "#FFFFFF"
+                        if (has_photo or actions[i]["kind"] == "primary")
+                        else (
+                            RED
+                            if (
+                                actions[i]["kind"] == "danger"
+                                and state["hover"] != i
+                            )
+                            else (
+                                "#FFFFFF"
+                                if actions[i]["kind"] == "danger"
+                                else TEXT
+                            )
                         )
-                        else "#FFFFFF"
                     ),
                     tags="card_text"
                 )
@@ -12048,6 +12387,8 @@ class StudesticsApp(tk.Tk):
 
     def build_chat(self):
 
+        self._warm_gemini()
+
         self.page_header(
             "AI Chat",
             "Your study assistant, powered by Gemini."
@@ -12388,56 +12729,29 @@ class StudesticsApp(tk.Tk):
         canvas,
         size=40
     ):
-        """The app's logo mark: an anti-aliased rounded square instead
-        of the plain flat-cornered square it was before."""
+        """The app's logo mark, drawn from the same image as the
+        window and taskbar icon."""
 
         if HAS_PIL and size > 2:
 
-            scale = 4
-            big = size * scale
-
-            img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-
-            draw.rounded_rectangle(
-                [0, 0, big - 1, big - 1],
-                radius=int(big * 0.28),
-                fill=PURPLE
-            )
-
-            img = img.resize((size, size), Image.LANCZOS)
-
-            photo = ImageTk.PhotoImage(img)
+            photo = ImageTk.PhotoImage(app_icon_image(size))
 
             canvas.logo_photo = photo
 
             canvas.create_image(0, 0, anchor="nw", image=photo)
 
-        else:
+            return
 
-            canvas.create_rectangle(
-                0, 0, size, size,
-                fill=PURPLE,
-                outline=""
-            )
-
-        badge_font = tkfont.Font(
-            family="Segoe UI",
-            size=int(size * 0.42),
-            weight="bold"
+        canvas.create_rectangle(
+            0, 0, size, size,
+            fill=PURPLE,
+            outline=""
         )
 
-        # Tk centers text using the font's full ascent+descent box, but
-        # a bare capital letter has no descender ink — that empty
-        # descent space pulls the glyph's visual position down/off-
-        # center. Shift it up using the font's own reported descent so
-        # this adapts correctly to whatever font actually gets used.
-        descent = badge_font.metrics("descent")
-
         canvas.create_text(
-            size / 2, (size / 2) - (descent / 2),
+            size / 2, size / 2,
             text="S",
-            font=badge_font,
+            font=("Segoe UI", int(size * 0.4), "bold"),
             fill="#FFFFFF"
         )
 
@@ -13966,11 +14280,270 @@ class StudesticsApp(tk.Tk):
 
         self.start_typing_animation()
 
+        self._first_token_s = None
+
+        def slow_hint():
+
+            try:
+
+                if self.chat_busy and self.stream_canvas is None:
+
+                    self.chat_status.configure(
+                        text="Gemini is slow right now…",
+                        fg=YELLOW
+                    )
+
+            except Exception:
+                pass
+
+        self.after(10000, slow_hint)
+
         threading.Thread(
             target=self.ai_worker,
             args=(text,),
             daemon=True
         ).start()
+
+    def _gemini_client(self):
+        """One Gemini client, made once and reused, so a message
+        doesn't pay for the import and a fresh connection each time."""
+
+        key = self.get_gemini_key()
+
+        if not key:
+            raise RuntimeError("Gemini API key is missing.")
+
+        cached = getattr(self, "_gemini_client_obj", None)
+
+        if cached and cached[0] == key:
+            return cached[1]
+
+        from google import genai
+
+        client = genai.Client(
+            api_key=key,
+            http_options={
+                "timeout": 30000
+            }
+        )
+
+        self._gemini_client_obj = (key, client)
+
+        return client
+
+    def _warm_gemini(self):
+        """Load Gemini in the background when the chat page opens, so
+        the first message doesn't wait for it."""
+
+        if getattr(self, "_gemini_warm", False):
+            return
+
+        if not self.get_gemini_key():
+            return
+
+        self._gemini_warm = True
+
+        def work():
+
+            try:
+                self._gemini_client()
+            except Exception:
+                self._gemini_warm = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_fast_path(self, client, user_text, started_at, setup_s):
+        """Answer through the standard streaming call. It starts
+        sending words much sooner than the Interactions call, which
+        waited 13-16 s before the first word. Returns True when it
+        answered; False means "use the older path instead" (an SDK
+        without this call, or anything unexpected before the first
+        word). Real errors after words have arrived are raised."""
+
+        if getattr(self, "_fast_path_off", False):
+            return False
+
+        try:
+
+            from google.genai import types
+
+            models = client.models
+
+            stream_call = models.generate_content_stream
+
+            # The recent chat, kept short so every request stays small.
+            turns = []
+
+            for row in self.db.get_messages()[-12:]:
+
+                content = (row["content"] or "").strip()
+
+                if not content:
+                    continue
+
+                if content.startswith((
+                    "Gemini error", "Gemini timed out", "(Interrupted)"
+                )):
+                    continue
+
+                role = "user" if row["role"] == "user" else "model"
+
+                turns.append((role, content[:1500]))
+
+            # The model needs the conversation to start with the student.
+            while turns and turns[0][0] != "user":
+                turns.pop(0)
+
+            if not turns or turns[-1][0] != "user":
+                turns.append(("user", user_text))
+
+            # Merge neighbours with the same role (an error message in
+            # between was left out above).
+            merged = []
+
+            for role, text in turns:
+
+                if merged and merged[-1][0] == role:
+                    merged[-1] = (role, merged[-1][1] + "\n" + text)
+                else:
+                    merged.append((role, text))
+
+            turns = merged
+
+            contents = [
+                types.Content(
+                    role=role,
+                    parts=[types.Part(text=text)]
+                )
+                for role, text in turns
+            ]
+
+            config = types.GenerateContentConfig(
+                system_instruction=(
+                    "You are Studestics AI, a friendly study and "
+                    "productivity assistant. Be helpful, practical, "
+                    "concise and encouraging. Help the student "
+                    "understand topics, plan work, organize tasks and "
+                    "study. Do not use emoji — the display environment "
+                    "cannot render most of them.\n\n"
+                    + self.get_ai_context()
+                ),
+                max_output_tokens=AI_MAX_OUTPUT_TOKENS
+            )
+
+        except Exception:
+
+            self._fast_path_off = True
+
+            return False
+
+        full_text = ""
+        used_model = None
+        bubble_started = False
+        last_update = 0.0
+
+        for model_name in self._gemini_model_candidates():
+
+            try:
+
+                for chunk in stream_call(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                ):
+
+                    piece = ""
+
+                    try:
+                        piece = chunk.text or ""
+                    except Exception:
+                        piece = ""
+
+                    if not piece:
+                        continue
+
+                    full_text += piece
+
+                    if not bubble_started:
+
+                        bubble_started = True
+
+                        waited = time.time() - started_at
+
+                        self._first_token_s = waited
+
+                        self._reply_info = (model_name, setup_s, waited)
+
+                        self.after(0, self.ai_stream_started)
+
+                    now = time.time()
+
+                    if now - last_update >= 0.05:
+
+                        last_update = now
+
+                        self.after(
+                            0,
+                            lambda t=full_text: self.ai_stream_update(t)
+                        )
+
+                used_model = model_name
+
+                break
+
+            except Exception as exc:
+
+                text = str(exc).lower()
+
+                if bubble_started:
+                    raise
+
+                missing = (
+                    "not_found" in text
+                    or "404" in text
+                    or "not found" in text
+                )
+
+                if missing:
+                    continue
+
+                # Key, quota and network problems read the same on
+                # either path: let the older path report them.
+                self._fast_path_off = True
+
+                return False
+
+        if used_model is None:
+            return False
+
+        if used_model != self.get_gemini_model():
+
+            self.db.set_setting("gemini_model", used_model)
+
+            self.after(
+                0,
+                lambda m=used_model: self._notify_model_fallback(m)
+            )
+
+        if bubble_started:
+
+            self.after(
+                0,
+                lambda t=full_text: self.ai_stream_update(t)
+            )
+
+        if not full_text:
+            raise RuntimeError("Gemini returned an empty response.")
+
+        self.db.add_message("assistant", full_text.strip())
+
+        self.after(
+            0,
+            lambda result=full_text.strip():
+                self.ai_stream_finished(result, None)
+        )
+
+        return True
 
     def ai_worker(
         self,
@@ -13979,24 +14552,17 @@ class StudesticsApp(tk.Tk):
 
         try:
 
-            # Lazy import.
-            # Gemini is NOT imported during startup.
-            from google import genai
+            started_at = time.time()
 
-            api_key = self.get_gemini_key()
+            # Gemini is NOT imported during startup; the first chat
+            # visit (or the first message) loads it, and the same
+            # connection is reused after that.
+            client = self._gemini_client()
 
-            if not api_key:
+            setup_s = time.time() - started_at
 
-                raise RuntimeError(
-                    "Gemini API key is missing."
-                )
-
-            client = genai.Client(
-                api_key=api_key,
-                http_options={
-                    "timeout": 30000
-                }
-            )
+            if self._ai_fast_path(client, user_text, started_at, setup_s):
+                return
 
             prompt = (
                 self.get_ai_context()
@@ -14009,7 +14575,11 @@ class StudesticsApp(tk.Tk):
                 "input": prompt,
                 "stream": True,
                 "generation_config": {
-                    "thinking_level": "low",
+                    # "minimal" starts answering fastest; models that
+                    # don't know it fall back to "low" (see create()).
+                    "thinking_level": getattr(
+                        self, "_thinking_level", "minimal"
+                    ),
                     # Keeps replies snappy and on-topic for a chat
                     # sidebar instead of long essays.
                     "max_output_tokens": AI_MAX_OUTPUT_TOKENS
@@ -14026,6 +14596,36 @@ class StudesticsApp(tk.Tk):
                     "environment cannot render most of them."
                 )
             }
+
+            def create(**kw):
+
+                try:
+
+                    return client.interactions.create(**kw)
+
+                except Exception as exc:
+
+                    level = kw.get("generation_config", {}).get(
+                        "thinking_level"
+                    )
+
+                    if (
+                        level == "minimal"
+                        and "thinking" in str(exc).lower()
+                    ):
+
+                        self._thinking_level = "low"
+
+                        kw = dict(kw)
+
+                        kw["generation_config"] = dict(
+                            kw["generation_config"],
+                            thinking_level="low"
+                        )
+
+                        return client.interactions.create(**kw)
+
+                    raise
 
             # Start a fresh server-side conversation every N turns so
             # the re-sent history can't grow without bound. The chat
@@ -14061,9 +14661,7 @@ class StudesticsApp(tk.Tk):
                 try:
 
                     stream = (
-                        client.interactions.create(
-                            **kwargs
-                        )
+                        create(**kwargs)
                     )
 
                     used_model = model_name
@@ -14101,9 +14699,7 @@ class StudesticsApp(tk.Tk):
                         try:
 
                             stream = (
-                                client.interactions.create(
-                                    **kwargs
-                                )
+                                create(**kwargs)
                             )
 
                             used_model = model_name
@@ -14143,6 +14739,8 @@ class StudesticsApp(tk.Tk):
                         continue
 
                     raise
+
+            created_s = time.time() - started_at
 
             if stream is None:
 
@@ -14202,6 +14800,14 @@ class StudesticsApp(tk.Tk):
                         if not bubble_started:
 
                             bubble_started = True
+
+                            self._first_token_s = time.time() - started_at
+
+                            self._reply_info = (
+                                used_model or "",
+                                setup_s,
+                                created_s
+                            )
 
                             self.after(
                                 0,
@@ -14485,8 +15091,28 @@ class StudesticsApp(tk.Tk):
 
         else:
 
+            waited = getattr(self, "_first_token_s", None)
+
+            info = getattr(self, "_reply_info", None)
+
+            if waited is not None and info:
+
+                label = (
+                    f"Ready  ·  {info[0]}  ·  first words {waited:.1f}s "
+                    f"(setup {info[1]:.1f}s, request {info[2] - info[1]:.1f}s, "
+                    f"thinking {waited - info[2]:.1f}s)"
+                )
+
+            elif waited is not None:
+
+                label = f"Ready  ·  first words in {waited:.1f}s"
+
+            else:
+
+                label = "Ready"
+
             self.chat_status.configure(
-                text="Ready",
+                text=label,
                 fg=GREEN
             )
 
@@ -15617,6 +16243,10 @@ class StudesticsApp(tk.Tk):
 
         appearance_panel = self._build_appearance_card()
 
+        sound_panel = self._build_sound_card()
+
+        update_panel = self._build_update_card()
+
         # Group the cards under headings, in this order.
         order = [
             (self._settings_heading(
@@ -15630,11 +16260,13 @@ class StudesticsApp(tk.Tk):
             ), None),
             (panel_outer, (0, 15)),
             (rem_panel_outer, (0, 15)),
+            (sound_panel, (0, 15)),
             *(
                 [(startup_panel, (0, 15))]
                 if startup_panel is not None
                 else []
             ),
+            (update_panel, (0, 15)),
             (self._settings_heading(
                 "Focus Mode",
                 "Timer length, distraction alerts and the clock."
@@ -15656,7 +16288,7 @@ class StudesticsApp(tk.Tk):
         for widget in (
             panel_outer, rem_panel_outer, focus_panel_outer,
             float_panel_outer, data_panel, dev_panel, startup_panel,
-            appearance_panel
+            appearance_panel, sound_panel, update_panel
         ):
 
             if widget is None:
@@ -17349,16 +17981,122 @@ class StudesticsApp(tk.Tk):
             if not self._quitting:
                 self.after(20000, self._reminder_tick)
 
-    def play_alarm(self, continuous=False):
-        """One burst of beeps, or — if continuous — a burst every
-        second or so until stop_alarm() is called."""
+    # --------------------------------------------------------
+    # Alarm sound
+    # --------------------------------------------------------
+
+    def _alarm_path(self):
+        """The wav/mp3 the chosen alarm sound points at."""
+
+        try:
+
+            choice = self.db.get_setting("alarm_sound", "Classic")
+
+            if choice == "Custom":
+
+                custom = self.db.get_setting("alarm_custom", "")
+
+                if custom and Path(custom).exists():
+                    return str(custom)
+
+                choice = "Classic"
+
+            if choice not in SOUND_PRESETS:
+                choice = "Classic"
+
+            return str(sound_preset_path(choice))
+
+        except Exception:
+
+            return ""
+
+    def play_alarm(self, continuous=False, path=None):
+        """The chosen sound once, or — if continuous — over and over
+        until stop_alarm() is called. Falls back to plain beeps when
+        the sound can't be played."""
 
         self.stop_alarm()
 
         stop = threading.Event()
         self._alarm_stop = stop
 
-        def worker():
+        path = path or self._alarm_path()
+
+        self._alarm_serial = getattr(self, "_alarm_serial", 0) + 1
+
+        alias = f"studalarm{self._alarm_serial}"
+
+        def play_file():
+
+            if not path or sys.platform != "win32":
+                return False
+
+            try:
+
+                kind = (
+                    "waveaudio"
+                    if str(path).lower().endswith(".wav")
+                    else "mpegvideo"
+                )
+
+                error, _ = mci_send(
+                    f'open "{path}" type {kind} alias {alias}'
+                )
+
+                if error:
+                    return False
+
+                error, _ = mci_send(f"play {alias}")
+
+                if error:
+
+                    mci_send(f"close {alias}")
+
+                    return False
+
+            except Exception:
+
+                return False
+
+            started = time.time()
+
+            try:
+
+                while not stop.is_set():
+
+                    stop.wait(0.2)
+
+                    error, mode = mci_send(f"status {alias} mode")
+
+                    if error or mode == "stopped":
+
+                        if not continuous:
+                            break
+
+                        stop.wait(0.8)
+
+                        if stop.is_set():
+                            break
+
+                        mci_send(f"seek {alias} to start")
+                        mci_send(f"play {alias}")
+
+                    if not continuous and time.time() - started > 30:
+                        break
+
+            finally:
+
+                try:
+
+                    mci_send(f"stop {alias}")
+                    mci_send(f"close {alias}")
+
+                except Exception:
+                    pass
+
+            return True
+
+        def beeps():
 
             try:
                 import winsound
@@ -17398,12 +18136,641 @@ class StudesticsApp(tk.Tk):
 
                 stop.wait(1.0)
 
+        def worker():
+
+            if not play_file():
+                beeps()
+
         threading.Thread(target=worker, daemon=True).start()
 
     def stop_alarm(self):
 
         if self._alarm_stop is not None:
             self._alarm_stop.set()
+
+    def _build_sound_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        tk.Label(
+            card,
+            text="Alarm sound",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=25, pady=(18, 2))
+
+        tk.Label(
+            card,
+            text="Played for reminders and when a focus session ends.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=25, pady=(0, 8))
+
+        chips = {}
+
+        def current():
+
+            value = self.db.get_setting("alarm_sound", "Classic")
+
+            return value if value in SOUND_PRESETS + ("Custom",) else "Classic"
+
+        def custom_name():
+
+            path = self.db.get_setting("alarm_custom", "")
+
+            if path and Path(path).exists():
+
+                name = re.sub(r"^\d+_", "", Path(path).name)
+
+                return name if len(name) <= 34 else name[:33] + "…"
+
+            return "No file chosen"
+
+        def refresh():
+
+            chosen = current()
+
+            for name, chip in chips.items():
+
+                try:
+                    chip.configure(selected=(name == chosen))
+                except Exception:
+                    pass
+
+            try:
+                file_label.configure(text=custom_name())
+            except Exception:
+                pass
+
+        def preview(name):
+
+            if name == "Custom":
+
+                path = self.db.get_setting("alarm_custom", "")
+
+                if not path or not Path(path).exists():
+
+                    messagebox.showinfo(
+                        "Alarm sound",
+                        "Choose a sound file first.",
+                        parent=self
+                    )
+
+                    return
+
+                self.play_alarm(False, path)
+
+            else:
+
+                self.play_alarm(False, str(sound_preset_path(name)))
+
+        def select(name):
+
+            if name == "Custom":
+
+                path = self.db.get_setting("alarm_custom", "")
+
+                if not path or not Path(path).exists():
+
+                    choose_file()
+
+                    return
+
+            self.db.set_setting("alarm_sound", name)
+
+            refresh()
+
+            preview(name)
+
+        def choose_file():
+
+            path = filedialog.askopenfilename(
+                title="Choose an alarm sound",
+                filetypes=[
+                    ("Audio", "*.mp3 *.wav *.wma *.m4a *.aac"),
+                    ("All files", "*.*")
+                ]
+            )
+
+            if not path:
+                return
+
+            self.stop_alarm()
+
+            try:
+
+                SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+
+                source = Path(path)
+
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", source.name)
+
+                destination = (
+                    SOUNDS_DIR /
+                    f"{int(datetime.now().timestamp())}_{safe}"
+                )
+
+                shutil.copy2(source, destination)
+
+                old = self.db.get_setting("alarm_custom", "")
+
+                self.db.set_setting("alarm_custom", str(destination))
+                self.db.set_setting("alarm_sound", "Custom")
+
+                if old and old != str(destination):
+
+                    try:
+                        Path(old).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Alarm sound",
+                    str(exc),
+                    parent=self
+                )
+
+                return
+
+            refresh()
+
+            preview("Custom")
+
+        # One row of buttons: click one to pick it and hear it.
+        strip = tk.Frame(card, bg=PANEL)
+
+        strip.pack(fill="x", padx=21, pady=(0, 4))
+
+        for name in SOUND_PRESETS + ("Custom",):
+
+            chip = self.make_button(
+                strip,
+                "\u25B6  " + name,
+                lambda n=name: select(n),
+                width=11
+            )
+
+            chip.pack(side="left", padx=4)
+
+            chips[name] = chip
+
+        custom_row = tk.Frame(card, bg=PANEL)
+
+        custom_row.pack(fill="x", padx=25, pady=(8, 0))
+
+        tk.Label(
+            custom_row,
+            text="Your own sound:",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 9)
+        ).pack(side="left")
+
+        file_label = tk.Label(
+            custom_row,
+            text="",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 9)
+        )
+
+        file_label.pack(side="left", padx=(8, 12))
+
+        self.make_button(
+            custom_row,
+            "Choose file",
+            choose_file,
+            width=11
+        ).pack(side="left")
+
+        tk.Frame(card, bg=PANEL, height=14).pack()
+
+        refresh()
+
+        return outer
+
+    # --------------------------------------------------------
+    # Updates
+    # --------------------------------------------------------
+
+    def check_for_updates(self, manual=False):
+        """Ask GitHub for the newest release. Quiet unless there is
+        something new (or the person pressed the button)."""
+
+        if getattr(self, "_update_busy", False):
+            return
+
+        self._update_busy = True
+
+        def say(text, color=None):
+
+            def apply():
+
+                label = getattr(self, "_update_status", None)
+
+                try:
+
+                    if label is not None and label.winfo_exists():
+                        label.configure(text=text, fg=color or MUTED_2)
+
+                except Exception:
+                    pass
+
+            self.after(0, apply)
+
+        if manual:
+            say("Checking…")
+
+        def worker():
+
+            try:
+
+                import json
+                import urllib.request
+
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/{UPDATE_REPO}"
+                    "/releases/latest",
+                    headers={
+                        "User-Agent": "Studestics",
+                        "Accept": "application/vnd.github+json"
+                    }
+                )
+
+                with urllib.request.urlopen(request, timeout=12) as reply:
+                    data = json.load(reply)
+
+                tag = str(data.get("tag_name", ""))
+
+                if version_tuple(tag) <= version_tuple(VERSION):
+
+                    if manual:
+                        say(f"You're up to date (v{VERSION}).", GREEN)
+
+                    return
+
+                asset = None
+
+                for item in data.get("assets", []):
+
+                    if str(item.get("name", "")).lower().endswith(".exe"):
+
+                        asset = item
+                        break
+
+                info = {
+                    "tag": tag,
+                    "notes": str(data.get("body") or "").strip(),
+                    "page": str(data.get("html_url") or ""),
+                    "url": asset.get("browser_download_url") if asset else "",
+                    "size": int(asset.get("size") or 0) if asset else 0,
+                    "digest": str(asset.get("digest") or "") if asset else ""
+                }
+
+                skipped = self.db.get_setting("update_skipped", "")
+
+                if not manual and skipped == tag:
+                    return
+
+                say(f"Version {tag} is available.", YELLOW)
+
+                self.after(0, lambda: self.show_update_popup(info))
+
+            except Exception:
+
+                if manual:
+                    say("Couldn't check. Are you online?", RED)
+
+            finally:
+
+                self._update_busy = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _auto_update_tick(self):
+
+        try:
+
+            if self.db.get_setting("auto_update_check", "1") == "1":
+                self.check_for_updates(False)
+
+        except Exception:
+            pass
+
+        if not self._quitting:
+            self.after(12 * 3600 * 1000, self._auto_update_tick)
+
+    def show_update_popup(self, info):
+
+        old = getattr(self, "_update_popup", None)
+
+        if old is not None:
+
+            try:
+                old.destroy()
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self)
+
+        self._update_popup = win
+
+        win.title("Update available")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.transient(self)
+
+        self.center_window(win, 520, 400)
+
+        tk.Label(
+            win,
+            text="A new version is out",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 18, "bold")
+        ).pack(anchor="w", padx=28, pady=(24, 2))
+
+        tk.Label(
+            win,
+            text=f"Studestics {info['tag']}  (you have v{VERSION})",
+            bg=BG,
+            fg=PURPLE_HOVER,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", padx=28)
+
+        notes = info["notes"] or "No release notes."
+
+        if len(notes) > 420:
+            notes = notes[:420].rstrip() + "…"
+
+        tk.Label(
+            win,
+            text=notes,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wraplength=460,
+            justify="left"
+        ).pack(anchor="w", padx=28, pady=(14, 0))
+
+        status = tk.Label(
+            win,
+            text="",
+            bg=BG,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        )
+
+        status.pack(anchor="w", padx=28, pady=(10, 0))
+
+        buttons = tk.Frame(win, bg=BG)
+
+        buttons.pack(side="bottom", fill="x", padx=28, pady=(0, 22))
+
+        def open_page():
+
+            try:
+
+                import webbrowser
+
+                webbrowser.open(info["page"] or f"https://github.com/{UPDATE_REPO}/releases/latest")
+
+            except Exception:
+                pass
+
+        def skip():
+
+            self.db.set_setting("update_skipped", info["tag"])
+
+            win.destroy()
+
+        can_install = (
+            getattr(sys, "frozen", False)
+            and info["url"].startswith(
+                f"https://github.com/{UPDATE_REPO}/releases/download/"
+            )
+        )
+
+        go = self.make_button(
+            buttons,
+            "Update now" if can_install else "Open download page",
+            lambda: install() if can_install else (open_page(), win.destroy()),
+            width=18
+        )
+
+        go.configure(selected=True)
+
+        go.pack(side="right")
+
+        self.make_button(
+            buttons,
+            "Later",
+            win.destroy,
+            width=8
+        ).pack(side="right", padx=(0, 10))
+
+        self.make_button(
+            buttons,
+            "Skip this version",
+            skip,
+            width=16
+        ).pack(side="left")
+
+        def set_status(text, color=MUTED_2):
+
+            try:
+
+                if status.winfo_exists():
+                    status.configure(text=text, fg=color)
+
+            except Exception:
+                pass
+
+        def install():
+
+            go.configure(state="disabled")
+
+            def worker():
+
+                import hashlib
+                import urllib.request
+
+                exe = Path(sys.executable)
+
+                fresh = exe.with_name(exe.name + ".new")
+
+                try:
+
+                    request = urllib.request.Request(
+                        info["url"],
+                        headers={"User-Agent": "Studestics"}
+                    )
+
+                    digest = hashlib.sha256()
+
+                    done = 0
+
+                    with urllib.request.urlopen(request, timeout=30) as reply:
+
+                        total = int(
+                            reply.headers.get("Content-Length") or info["size"] or 0
+                        )
+
+                        with open(fresh, "wb") as handle:
+
+                            while True:
+
+                                chunk = reply.read(262144)
+
+                                if not chunk:
+                                    break
+
+                                handle.write(chunk)
+                                digest.update(chunk)
+                                done += len(chunk)
+
+                                if total:
+
+                                    self.after(
+                                        0,
+                                        lambda d=done, t=total: set_status(
+                                            f"Downloading…  {d * 100 // t}%"
+                                        )
+                                    )
+
+                    if info["size"] and done != info["size"]:
+                        raise RuntimeError("The download was incomplete.")
+
+                    expected = info["digest"].lower()
+
+                    if expected.startswith("sha256:") and (
+                        digest.hexdigest() != expected[7:]
+                    ):
+                        raise RuntimeError("The download didn't match its checksum.")
+
+                    # A running .exe can be renamed but not overwritten.
+                    backup = exe.with_name(exe.name + ".old")
+
+                    try:
+                        backup.unlink()
+                    except Exception:
+                        pass
+
+                    os.replace(exe, backup)
+
+                    try:
+                        os.replace(fresh, exe)
+                    except Exception:
+                        os.replace(backup, exe)
+                        raise
+
+                except Exception as exc:
+
+                    try:
+                        fresh.unlink()
+                    except Exception:
+                        pass
+
+                    def failed(message=str(exc)):
+
+                        set_status(
+                            "Couldn't update automatically. Opening the "
+                            "download page instead.",
+                            RED
+                        )
+
+                        open_page()
+
+                        try:
+                            go.configure(state="normal")
+                        except Exception:
+                            pass
+
+                    self.after(0, failed)
+
+                    return
+
+                self.after(0, lambda: set_status("Restarting…", GREEN))
+                self.after(600, self.restart_app)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _build_update_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=18)
+
+        left = tk.Frame(row, bg=PANEL)
+
+        left.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            left,
+            text=f"Updates  ·  v{VERSION}",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        self._update_status = tk.Label(
+            left,
+            text="Checks GitHub for a newer version when the app starts.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9),
+            wraplength=480,
+            justify="left"
+        )
+
+        self._update_status.pack(anchor="w", pady=(2, 0))
+
+        auto_on = self.db.get_setting("auto_update_check", "1") == "1"
+
+        def toggle():
+
+            now_on = self.db.get_setting("auto_update_check", "1") != "1"
+
+            self.db.set_setting("auto_update_check", "1" if now_on else "0")
+
+            toggle_button.configure(
+                text="Auto: On" if now_on else "Auto: Off",
+                selected=now_on
+            )
+
+        toggle_button = self.make_button(
+            row,
+            "Auto: On" if auto_on else "Auto: Off",
+            toggle,
+            width=10
+        )
+
+        toggle_button.configure(selected=auto_on)
+
+        toggle_button.pack(side="right")
+
+        self.make_button(
+            row,
+            "Check now",
+            lambda: self.check_for_updates(True),
+            width=11
+        ).pack(side="right", padx=(0, 8))
+
+        return outer
 
     def _attach_alarm(self, win, continuous):
         """Start the alarm and tie it to a popup: it stops the moment
