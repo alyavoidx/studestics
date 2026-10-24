@@ -76,7 +76,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -1472,6 +1472,21 @@ class Database:
 
                 self.connection.commit()
 
+            # One-time reminders: a date and time, fired once.
+            if "remind_at" not in columns:
+
+                self.connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN "
+                    "remind_at TEXT DEFAULT ''"
+                )
+
+                self.connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN "
+                    "remind_done INTEGER DEFAULT 0"
+                )
+
+                self.connection.commit()
+
             # Older databases predate goal descriptions and pictures.
             goal_columns = [
                 row["name"] for row in
@@ -1593,7 +1608,8 @@ class Database:
         deadline,
         priority,
         image_path="",
-        remind_minutes=0
+        remind_minutes=0,
+        remind_at=""
     ):
 
         with self.lock:
@@ -1608,9 +1624,10 @@ class Database:
                     status,
                     image_path,
                     remind_minutes,
+                    remind_at,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, 'Pending', ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'Pending', ?, ?, ?, ?)
                 """,
                 (
                     title,
@@ -1619,6 +1636,7 @@ class Database:
                     priority,
                     image_path,
                     int(remind_minutes or 0),
+                    remind_at or "",
                     now_string()
                 )
             )
@@ -1644,7 +1662,8 @@ class Database:
         deadline,
         priority,
         image_path="",
-        remind_minutes=0
+        remind_minutes=0,
+        remind_at=""
     ):
 
         with self.lock:
@@ -1658,7 +1677,9 @@ class Database:
                     deadline=?,
                     priority=?,
                     image_path=?,
-                    remind_minutes=?
+                    remind_minutes=?,
+                    remind_at=?,
+                    remind_done=0
                 WHERE id=?
                 """,
                 (
@@ -1668,8 +1689,20 @@ class Database:
                     priority,
                     image_path,
                     int(remind_minutes or 0),
+                    remind_at or "",
                     task_id
                 )
+            )
+
+            self.connection.commit()
+
+    def mark_reminded(self, task_id):
+
+        with self.lock:
+
+            self.connection.execute(
+                "UPDATE tasks SET remind_done=1 WHERE id=?",
+                (task_id,)
             )
 
             self.connection.commit()
@@ -2692,6 +2725,9 @@ class RoundedButton:
     def grid(self, *args, **kwargs):
         self.canvas.grid(*args, **kwargs)
 
+    def place(self, *args, **kwargs):
+        self.canvas.place(*args, **kwargs)
+
     def destroy(self):
         self.canvas.destroy()
 
@@ -3002,6 +3038,41 @@ class StudesticsApp(tk.Tk):
                 1 if (red * 299 + green * 587 + blue * 114) / 1000 < 128
                 else 0
             )
+
+            # The window's own background brush is white by default and
+            # shows through as white patches while the window is being
+            # resized, minimised or maximised. Make it the theme colour.
+            try:
+
+                from ctypes import wintypes
+
+                brush = getattr(self, "_bg_brush", None)
+
+                if brush is None:
+
+                    gdi = ctypes.windll.gdi32
+
+                    gdi.CreateSolidBrush.restype = ctypes.c_void_p
+
+                    brush = gdi.CreateSolidBrush(
+                        red | (green << 8) | (blue << 16)
+                    )
+
+                    self._bg_brush = brush
+
+                set_class = ctypes.windll.user32.SetClassLongPtrW
+
+                set_class.argtypes = [
+                    wintypes.HWND, ctypes.c_int, ctypes.c_void_p
+                ]
+
+                set_class.restype = ctypes.c_void_p
+
+                for handle in {hwnd, window.winfo_id()}:
+                    set_class(handle, -10, brush)    # GCLP_HBRBACKGROUND
+
+            except Exception:
+                pass
 
             dwm = ctypes.windll.dwmapi
 
@@ -3551,6 +3622,156 @@ class StudesticsApp(tk.Tk):
     # UI HELPERS
     # ========================================================
 
+    def make_switch(self, parent, on=False, command=None, bg=None):
+        """An on/off switch: a pill with a round knob that slides.
+        Anti-aliased. Returns the canvas; it has .set_on(value) and
+        .is_on()."""
+
+        bg = bg or BG
+
+        w, h = 46, 26
+
+        canvas = tk.Canvas(
+            parent,
+            width=w,
+            height=h,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2"
+        )
+
+        state = {"on": bool(on), "pos": 1.0 if on else 0.0, "job": None}
+
+        off_colour = _theme_mix(PANEL_2, TEXT, 0.22)
+
+        cache = {}
+
+        def render(pos):
+
+            key = round(pos * 10)
+
+            if key in cache:
+                return cache[key]
+
+            t = key / 10
+
+            colour = _theme_mix(off_colour, PURPLE, t)
+
+            if HAS_PIL:
+
+                k = 4
+
+                img = Image.new("RGB", (w * k, h * k), bg)
+
+                pen = ImageDraw.Draw(img)
+
+                pen.rounded_rectangle(
+                    (0, 0, w * k - 1, h * k - 1),
+                    radius=h * k // 2,
+                    fill=colour
+                )
+
+                pad = 3
+
+                size = h - 2 * pad
+
+                x0 = pad + t * (w - h)
+
+                pen.ellipse(
+                    (
+                        x0 * k, pad * k,
+                        (x0 + size) * k, (pad + size) * k
+                    ),
+                    fill="#FFFFFF"
+                )
+
+                photo = ImageTk.PhotoImage(
+                    img.resize((w, h), Image.LANCZOS)
+                )
+
+                cache[key] = photo
+
+                return photo
+
+            return None
+
+        def draw():
+
+            canvas.delete("all")
+
+            photo = render(state["pos"])
+
+            if photo is not None:
+
+                canvas.create_image(0, 0, anchor="nw", image=photo)
+
+            else:
+
+                canvas.create_rectangle(
+                    0, 0, w, h,
+                    fill=PURPLE if state["on"] else off_colour,
+                    outline=""
+                )
+
+        def glide(target):
+
+            if state["job"] is not None:
+
+                try:
+                    canvas.after_cancel(state["job"])
+                except Exception:
+                    pass
+
+            def step():
+
+                pos = state["pos"]
+
+                if abs(target - pos) < 0.11:
+
+                    state["pos"] = target
+                    state["job"] = None
+                    draw()
+
+                    return
+
+                state["pos"] = pos + (0.25 if target > pos else -0.25)
+
+                draw()
+
+                state["job"] = canvas.after(14, step)
+
+            step()
+
+        def set_on(value, animate=True):
+
+            state["on"] = bool(value)
+
+            target = 1.0 if state["on"] else 0.0
+
+            if animate:
+                glide(target)
+            else:
+                state["pos"] = target
+                draw()
+
+        def click(event=None):
+
+            set_on(not state["on"])
+
+            if command:
+                command(state["on"])
+
+        canvas.bind("<Button-1>", click)
+
+        canvas.set_on = set_on
+        canvas.is_on = lambda: state["on"]
+        canvas.toggle = click
+
+        draw()
+
+        return canvas
+
     def make_button(
         self,
         parent,
@@ -3926,6 +4147,8 @@ class StudesticsApp(tk.Tk):
                 pady=(4, 0)
             )
 
+        return header
+
     def section_title(
         self,
         parent,
@@ -4005,6 +4228,28 @@ class StudesticsApp(tk.Tk):
 
         self.clear_page()
 
+        # A cover hides the page while it is built and laid out, so the
+        # cards are never seen jumping from a small size to the real one.
+        cover = None
+
+        try:
+
+            cover = tk.Frame(self.main, bg=BG)
+
+            cover.place(x=0, y=0, relwidth=1, relheight=1)
+
+            cover.lift()
+
+            # Safety net: if building the page ever fails, the cover
+            # must not stay on screen.
+            self.after(
+                1500,
+                lambda c=cover: c.winfo_exists() and c.destroy()
+            )
+
+        except Exception:
+            cover = None
+
         if page_name == "Dashboard":
             self.build_dashboard()
 
@@ -4033,6 +4278,13 @@ class StudesticsApp(tk.Tk):
             self.build_profile()
 
         self._settle_panels()
+
+        if cover is not None:
+
+            try:
+                cover.destroy()
+            except Exception:
+                pass
 
         profile = self.db.get_profile()
 
@@ -7036,8 +7288,12 @@ class StudesticsApp(tk.Tk):
             anchor="n"
         )
 
+        custom_panel = tk.Frame(reveal_inner, bg=BG)
+
+        custom_panel.pack(fill="x")
+
         tk.Label(
-            reveal_inner,
+            custom_panel,
             text="Remind me every  (minutes)",
             bg=BG,
             fg=MUTED
@@ -7047,7 +7303,7 @@ class StudesticsApp(tk.Tk):
         )
 
         remind_entry = self.make_entry(
-            reveal_inner
+            custom_panel
         )
 
         remind_entry.pack(
@@ -7057,7 +7313,7 @@ class StudesticsApp(tk.Tk):
         )
 
         tk.Label(
-            reveal_inner,
+            custom_panel,
             text=(
                 "Overrides the default — Low "
                 f"{self._fmt_minutes(self.reminder_default('Low'))}"
@@ -7075,6 +7331,7 @@ class StudesticsApp(tk.Tk):
         )
 
         custom_state = {"on": False}
+        once_state = {"on": False}
         reveal_anim = {"job": None, "height": 1}
 
         def animate_reveal(target, duration=260, steps=16):
@@ -7136,6 +7393,10 @@ class StudesticsApp(tk.Tk):
 
             if custom_state["on"]:
 
+                once_state["on"] = False
+
+                once_switch.set_on(False)
+
                 form.update_idletasks()
 
                 animate_reveal(reveal_inner.winfo_reqheight())
@@ -7143,6 +7404,20 @@ class StudesticsApp(tk.Tk):
                 window.after(280, remind_entry.focus_set)
 
             else:
+
+                animate_reveal(1)
+
+        def toggle_once(value):
+            """One-time reminder: just a switch. The task's deadline
+            (date and time, set above) is when it fires, once."""
+
+            once_state["on"] = bool(value)
+
+            if once_state["on"] and custom_state["on"]:
+
+                custom_state["on"] = False
+
+                custom_button.configure(selected=False)
 
                 animate_reveal(1)
 
@@ -7159,6 +7434,50 @@ class StudesticsApp(tk.Tk):
             side="left",
             padx=(14, 0)
         )
+
+        once_row = tk.Frame(form, bg=BG)
+
+        once_row.pack(fill="x", pady=(2, 12))
+
+        once_switch = self.make_switch(
+            once_row,
+            on=False,
+            command=toggle_once
+        )
+
+        once_switch.pack(side="left")
+
+        once_text = tk.Label(
+            once_row,
+            text="One-time reminder",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 10),
+            cursor="hand2"
+        )
+
+        once_text.pack(side="left", padx=(12, 0))
+
+        once_text.bind("<Button-1>", lambda e: once_switch.toggle())
+
+        tk.Label(
+            once_row,
+            text="Remind me once, at the deadline above",
+            bg=BG,
+            fg=MUTED_2,
+            font=("Segoe UI", 8)
+        ).pack(side="left", padx=(12, 0))
+
+        try:
+
+            if editing and task["remind_at"]:
+
+                once_state["on"] = True
+
+                once_switch.set_on(True, animate=False)
+
+        except Exception:
+            pass
 
         if editing and int(task["remind_minutes"] or 0) > 0:
 
@@ -7279,6 +7598,42 @@ class StudesticsApp(tk.Tk):
 
                     return
 
+            remind_at = ""
+
+            if once_state["on"]:
+
+                try:
+
+                    when = datetime.strptime(
+                        deadline_picker["get"](), "%Y-%m-%d %H:%M:%S"
+                    )
+
+                except ValueError:
+
+                    messagebox.showwarning(
+                        "Task",
+                        "One-time reminder: choose a deadline date "
+                        "and time first. That is when you will be "
+                        "reminded.",
+                        parent=window
+                    )
+
+                    return
+
+                if when <= datetime.now():
+
+                    messagebox.showwarning(
+                        "Task",
+                        "That time has already passed.",
+                        parent=window
+                    )
+
+                    return
+
+                remind_at = when.strftime("%Y-%m-%d %H:%M:%S")
+
+                remind_minutes = 0
+
             if editing:
 
                 self.db.update_task(
@@ -7288,7 +7643,8 @@ class StudesticsApp(tk.Tk):
                     deadline_picker["get"](),
                     priority_state["value"],
                     selected_path.get(),
-                    remind_minutes
+                    remind_minutes,
+                    remind_at
                 )
 
             else:
@@ -7299,7 +7655,8 @@ class StudesticsApp(tk.Tk):
                     deadline_picker["get"](),
                     priority_state["value"],
                     selected_path.get(),
-                    remind_minutes
+                    remind_minutes,
+                    remind_at
                 )
 
             window.destroy()
@@ -8701,11 +9058,598 @@ class StudesticsApp(tk.Tk):
     # NOTES (a plain text editor)
     # ========================================================
 
+    # ========================================================
+    # AI QUIZ FROM NOTES
+    # ========================================================
+
+    def _make_quiz(self, text, count=5):
+        """Ask Gemini for multiple-choice questions about `text`.
+        Returns a list of dicts: q, options (4), answer (0-3), why."""
+
+        import json
+
+        client = self._gemini_client()
+
+        prompt = (
+            f"Write {count} multiple-choice questions that test "
+            "understanding of the study notes below. Use only facts "
+            "from the notes. Each question has exactly 4 options and "
+            "one correct answer. Reply with ONLY a JSON array, no "
+            "other text, like: "
+            '[{"q": "...", "options": ["a", "b", "c", "d"], '
+            '"answer": 0, "why": "one short sentence"}] '
+            "where answer is the index (0-3) of the correct option.\n\n"
+            "NOTES:\n" + text[:12000]
+        )
+
+        last_error = None
+
+        for model_name in self._gemini_model_candidates():
+
+            try:
+
+                reply = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "max_output_tokens": min(
+                            30000, 800 + 260 * count
+                        ),
+                        # Big quizzes take a while; don't use the short
+                        # chat timeout.
+                        "http_options": {"timeout": 240000}
+                    }
+                )
+
+                raw = (reply.text or "").strip()
+
+                if raw.startswith("```"):
+                    raw = raw.strip("`")
+                    raw = raw[raw.find("["):]
+
+                start, end = raw.find("["), raw.rfind("]")
+
+                data = json.loads(raw[start:end + 1])
+
+                quiz = []
+
+                for item in data:
+
+                    options = [str(o) for o in item["options"]][:4]
+
+                    answer = int(item["answer"])
+
+                    if len(options) == 4 and 0 <= answer < 4:
+
+                        quiz.append({
+                            "q": str(item["q"]),
+                            "options": options,
+                            "answer": answer,
+                            "why": str(item.get("why", ""))
+                        })
+
+                if quiz:
+                    return quiz
+
+                last_error = RuntimeError("No usable questions came back.")
+
+            except Exception as exc:
+
+                last_error = exc
+
+        raise last_error or RuntimeError("Couldn't make a quiz.")
+
+    def start_quiz(self, text):
+
+        text = (text or "").strip()
+
+        if len(text.split()) < 25:
+
+            messagebox.showinfo(
+                "Quiz me",
+                "Write a bit more first. A quiz needs at least a few "
+                "sentences of notes (select part of the text to quiz "
+                "only that part)."
+            )
+
+            return
+
+        if not self.get_gemini_key():
+
+            messagebox.showinfo(
+                "Quiz me",
+                "Add your Gemini API key in Settings first."
+            )
+
+            return
+
+        win = tk.Toplevel(self)
+
+        win.title("Quiz me")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.transient(self)
+
+        self.center_window(win, 600, 330)
+
+        body = tk.Frame(win, bg=BG)
+
+        body.pack(fill="both", expand=True, padx=30, pady=24)
+
+        state = {
+            "quiz": [], "index": 0, "score": 0, "alive": True,
+            "count": 5
+        }
+
+        win.bind("<Destroy>", lambda e: state.update(alive=False)
+                 if e.widget is win else None)
+
+        def clear():
+
+            for child in body.winfo_children():
+                child.destroy()
+
+        def fit(extra=0, minimum=300, center=True):
+            """Size the window to what is in it."""
+
+            if not state["alive"]:
+                return
+
+            win.update_idletasks()
+
+            height = max(minimum, win.winfo_reqheight() + extra)
+
+            if center:
+                self.center_window(win, 600, height)
+            else:
+                # Grow downwards in place, so the window doesn't jump.
+                win.geometry(f"600x{height}")
+
+        def label(text, size=11, bold=False, colour=TEXT, **kw):
+
+            widget = tk.Label(
+                body,
+                text=text,
+                bg=BG,
+                fg=colour,
+                font=("Segoe UI", size, "bold" if bold else "normal"),
+                wraplength=540,
+                justify="left",
+                **kw
+            )
+
+            widget.pack(anchor="w")
+
+            return widget
+
+        def show_loading():
+
+            clear()
+
+            label("Making your quiz\u2026", 18, True).pack_configure(
+                pady=(60, 6)
+            )
+
+            count = state["count"]
+
+            label(
+                f"Gemini is writing {count} question"
+                f"{'s' if count != 1 else ''} from your notes. "
+                + (
+                    "This takes a few seconds."
+                    if count <= 10 else
+                    "A big quiz can take up to a minute."
+                ),
+                10,
+                colour=MUTED
+            )
+
+            fit(minimum=260)
+
+        def show_setup():
+
+            clear()
+
+            label("Quiz me", 18, True).pack_configure(pady=(30, 4))
+
+            label(
+                "How many questions do you want? Drag the slider.",
+                10,
+                colour=MUTED
+            )
+
+            number = tk.Label(
+                body,
+                bg=BG,
+                fg=PURPLE_HOVER,
+                font=("Segoe UI", 40, "bold")
+            )
+
+            number.pack(pady=(22, 0))
+
+            caption = tk.Label(
+                body,
+                bg=BG,
+                fg=MUTED,
+                font=("Segoe UI", 10)
+            )
+
+            caption.pack()
+
+            track_w = 480
+
+            slider = tk.Canvas(
+                body,
+                width=track_w + 24,
+                height=44,
+                bg=BG,
+                highlightthickness=0,
+                cursor="hand2"
+            )
+
+            slider.pack(pady=(16, 0))
+
+            def redraw():
+
+                value = state["count"]
+
+                x = 12 + (value - 1) / 49 * track_w
+
+                slider.delete("all")
+
+                if HAS_PIL:
+
+                    # Drawn four times bigger and shrunk, so the edges
+                    # are smooth instead of jagged.
+                    try:
+
+                        k = 4
+                        w = track_w + 24
+                        h = 44
+
+                        img = Image.new("RGB", (w * k, h * k), BG)
+
+                        pen = ImageDraw.Draw(img)
+
+                        def bar(x1, x2, colour):
+
+                            pen.rounded_rectangle(
+                                (x1 * k, 19 * k, x2 * k, 25 * k),
+                                radius=3 * k,
+                                fill=colour
+                            )
+
+                        bar(12, 12 + track_w, PANEL_2)
+                        bar(12, max(x, 15), PURPLE)
+
+                        pen.ellipse(
+                            ((x - 11) * k, 11 * k, (x + 11) * k, 33 * k),
+                            fill=PURPLE_HOVER
+                        )
+
+                        photo = ImageTk.PhotoImage(
+                            img.resize((w, h), Image.LANCZOS)
+                        )
+
+                        slider._photo = photo
+
+                        slider.create_image(0, 0, anchor="nw", image=photo)
+
+                        number.configure(text=str(value))
+
+                        caption.configure(
+                            text="question" if value == 1 else "questions"
+                        )
+
+                        return
+
+                    except Exception:
+                        slider.delete("all")
+
+                slider.create_line(
+                    12, 22, 12 + track_w, 22,
+                    width=6, fill=PANEL_2, capstyle="round"
+                )
+
+                slider.create_line(
+                    12, 22, x, 22,
+                    width=6, fill=PURPLE, capstyle="round"
+                )
+
+                slider.create_oval(
+                    x - 11, 11, x + 11, 33,
+                    fill=PURPLE_HOVER, outline=BG, width=3
+                )
+
+                number.configure(text=str(value))
+
+                caption.configure(
+                    text="question" if value == 1 else "questions"
+                )
+
+            def drag(event):
+
+                value = round((event.x - 12) / track_w * 49) + 1
+
+                state["count"] = max(1, min(50, value))
+
+                redraw()
+
+            slider.bind("<Button-1>", drag)
+            slider.bind("<B1-Motion>", drag)
+
+            ends = tk.Frame(body, bg=BG)
+
+            ends.pack(fill="x", padx=12)
+
+            tk.Label(
+                ends, text="1", bg=BG, fg=MUTED_2,
+                font=("Segoe UI", 9)
+            ).pack(side="left")
+
+            tk.Label(
+                ends, text="50", bg=BG, fg=MUTED_2,
+                font=("Segoe UI", 9)
+            ).pack(side="right")
+
+            row = tk.Frame(body, bg=BG)
+
+            row.pack(pady=(26, 0))
+
+            go = self.make_button(row, "Start quiz", begin, width=14)
+
+            go.configure(selected=True)
+
+            go.pack(side="left")
+
+            self.make_button(
+                row, "Cancel", win.destroy, width=9
+            ).pack(side="left", padx=10)
+
+            redraw()
+
+            fit(minimum=380)
+
+        def show_error(message):
+
+            clear()
+
+            label("Couldn't make a quiz", 18, True).pack_configure(
+                pady=(40, 8)
+            )
+
+            label(message[:300], 10, colour=RED)
+
+            row = tk.Frame(body, bg=BG)
+
+            row.pack(anchor="w", pady=(18, 0))
+
+            retry = self.make_button(row, "Try again", begin, width=12)
+
+            retry.configure(selected=True)
+
+            retry.pack(side="left")
+
+            self.make_button(
+                row, "Close", win.destroy, width=9
+            ).pack(side="left", padx=10)
+
+            fit(minimum=260)
+
+        def show_question():
+
+            clear()
+
+            quiz = state["quiz"]
+
+            item = quiz[state["index"]]
+
+            label(
+                f"Question {state['index'] + 1} of {len(quiz)}",
+                10,
+                True,
+                PURPLE_HOVER
+            )
+
+            progress = tk.Canvas(
+                body,
+                width=540,
+                height=6,
+                bg=BG,
+                highlightthickness=0
+            )
+
+            progress.pack(anchor="w", pady=(8, 0))
+
+            progress.create_rectangle(
+                0, 0, 540, 6, fill=PANEL_2, outline=""
+            )
+
+            progress.create_rectangle(
+                0, 0, 540 * state["index"] // len(quiz), 6,
+                fill=PURPLE, outline=""
+            )
+
+            label(item["q"], 15, True).pack_configure(pady=(18, 18))
+
+            result = tk.Label(
+                body,
+                text="",
+                bg=BG,
+                fg=GREEN,
+                font=("Segoe UI", 10, "bold"),
+                wraplength=540,
+                justify="left"
+            )
+
+            why = tk.Label(
+                body,
+                text="",
+                bg=BG,
+                fg=MUTED,
+                font=("Segoe UI", 10),
+                wraplength=540,
+                justify="left"
+            )
+
+            buttons = []
+
+            footer = tk.Frame(body, bg=BG)
+
+            def choose(number):
+
+                for button in buttons:
+                    button.configure(state="disabled")
+
+                correct = number == item["answer"]
+
+                if correct:
+                    state["score"] += 1
+
+                buttons[item["answer"]].configure(selected=True)
+
+                result.configure(
+                    text=(
+                        "Correct!"
+                        if correct else
+                        "Not quite. The answer is highlighted."
+                    ),
+                    fg=GREEN if correct else RED
+                )
+
+                why.configure(text=item["why"])
+
+                last = state["index"] + 1 >= len(quiz)
+
+                nxt = self.make_button(
+                    footer,
+                    "See score" if last else "Next",
+                    advance,
+                    width=12
+                )
+
+                nxt.configure(selected=True)
+
+                nxt.pack(side="right", pady=(14, 0))
+
+                # Make room for the verdict, explanation and Next.
+                fit(extra=8, minimum=200, center=False)
+
+            for number, option in enumerate(item["options"]):
+
+                button = self.make_button(
+                    body,
+                    option if len(option) < 76 else option[:73] + "…",
+                    lambda n=number: choose(n),
+                    width=57
+                )
+
+                button.pack(anchor="w", pady=5)
+
+                buttons.append(button)
+
+            result.pack(anchor="w", pady=(14, 2))
+
+            why.pack(anchor="w")
+
+            footer.pack(side="bottom", fill="x")
+
+            fit(extra=8, minimum=200)
+
+        def advance():
+
+            state["index"] += 1
+
+            if state["index"] >= len(state["quiz"]):
+                show_score()
+            else:
+                show_question()
+
+        def show_score():
+
+            clear()
+
+            total = len(state["quiz"])
+
+            score = state["score"]
+
+            label("Quiz done", 18, True).pack_configure(pady=(50, 6))
+
+            label(
+                f"You got {score} of {total}.",
+                14,
+                True,
+                GREEN if score * 2 >= total else YELLOW
+            )
+
+            label(
+                "Great work." if score == total else
+                "Nice. Read the notes once more and try again."
+                if score * 2 >= total else
+                "Worth another read of the notes, then try again.",
+                10,
+                colour=MUTED
+            ).pack_configure(pady=(6, 0))
+
+            row = tk.Frame(body, bg=BG)
+
+            row.pack(anchor="w", pady=(22, 0))
+
+            again = self.make_button(
+                row, "New quiz", show_setup, width=12
+            )
+
+            again.configure(selected=True)
+
+            again.pack(side="left")
+
+            self.make_button(
+                row, "Close", win.destroy, width=9
+            ).pack(side="left", padx=10)
+
+            fit(minimum=300)
+
+        def begin():
+
+            state.update(quiz=[], index=0, score=0)
+
+            show_loading()
+
+            def work():
+
+                try:
+                    quiz = self._make_quiz(text, state["count"])
+                except Exception as exc:
+                    message = str(exc)
+                    self.after(
+                        0,
+                        lambda: state["alive"] and show_error(message)
+                    )
+                    return
+
+                def ready():
+
+                    if not state["alive"]:
+                        return
+
+                    state["quiz"] = quiz
+
+                    show_question()
+
+                self.after(0, ready)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        show_setup()
+
     def build_notes(self):
 
-        self.page_header(
+        header = self.page_header(
             "Notes",
-            "A simple text editor. Write here, or open and edit .txt files."
+            "A simple text editor. Write here, or open and edit .txt "
+            "files. New: press Quiz me for a quiz on your notes, or "
+            "type /notes in AI Chat to have the AI write them."
         )
 
         db = self.db
@@ -9007,6 +9951,41 @@ class StudesticsApp(tk.Tk):
         self.make_button(
             bar, "Save as", save_as, width=9
         ).pack(side="left", padx=8)
+
+        def quiz_me():
+
+            try:
+                chosen = editor.get("sel.first", "sel.last")
+            except tk.TclError:
+                chosen = ""
+
+            self.start_quiz(chosen or editor.get("1.0", "end-1c"))
+
+        quiz_button = self.make_button(
+            header, "Quiz me", quiz_me, width=11
+        )
+
+        quiz_button.configure(selected=True)
+
+        quiz_button.place(relx=1.0, rely=0.5, anchor="e")
+
+        # A small "NEW" tag on the button's corner.
+        new_tag = tk.Label(
+            header,
+            text="NEW",
+            bg=GREEN,
+            fg=BG,
+            font=("Segoe UI", 7, "bold"),
+            padx=5,
+            pady=1
+        )
+
+        new_tag.place(
+            in_=quiz_button.canvas,
+            relx=1.0,
+            rely=0.0,
+            anchor="center"
+        )
 
         state_label = tk.Label(
             bar,
@@ -12466,7 +13445,8 @@ class StudesticsApp(tk.Tk):
 
         self.page_header(
             "AI Chat",
-            "Your study assistant, powered by Gemini."
+            "Your study assistant, powered by Gemini. New: type "
+            "/notes and a topic to save notes to your Notes tab."
         )
 
         outer = tk.Frame(
@@ -12586,12 +13566,18 @@ class StudesticsApp(tk.Tk):
                 "assistant",
                 "Hey! I'm Studestics AI.\n\n"
                 "Ask me about your studies, "
-                "planning, assignments or goals."
+                "planning, assignments or goals.\n\n"
+                "Tip: type /notes and a topic, for example "
+                "/notes photosynthesis, and I'll write study notes "
+                "into your Notes tab."
             )
 
         else:
 
-            for message in messages:
+            # Only the latest messages are drawn when the page opens;
+            # drawing a long history word by word is what made the
+            # page slow. Everything stays saved.
+            for message in messages[-20:]:
 
                 self.add_chat_bubble(
                     message["role"],
@@ -13040,8 +14026,20 @@ class StudesticsApp(tk.Tk):
         fg_color
     ):
 
-        regular_font = tkfont.Font(family="Segoe UI", size=10)
-        bold_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        # Made once: creating two Font objects for every bubble was a
+        # big part of the delay when the chat page opened.
+        fonts = getattr(self, "_bubble_fonts", None)
+
+        if fonts is None:
+
+            fonts = (
+                tkfont.Font(family="Segoe UI", size=10),
+                tkfont.Font(family="Segoe UI", size=10, weight="bold")
+            )
+
+            self._bubble_fonts = fonts
+
+        regular_font, bold_font = fonts
 
         pad_x, pad_y, line_gap = 16, 12, 5
         max_text_width = 440
@@ -13778,7 +14776,7 @@ class StudesticsApp(tk.Tk):
     # Chat input placeholder + autosize
     # --------------------------------------------------------
 
-    CHAT_PLACEHOLDER_TEXT = "Message Studestics AI..."
+    CHAT_PLACEHOLDER_TEXT = "Message Studestics AI...  (try /notes topic)"
 
     CHAT_PLACEHOLDER_IGNORE_KEYS = {
         "Shift_L", "Shift_R", "Control_L", "Control_R",
@@ -14398,7 +15396,7 @@ class StudesticsApp(tk.Tk):
         client = genai.Client(
             api_key=key,
             http_options={
-                "timeout": 30000
+                "timeout": 12000
             }
         )
 
@@ -14421,7 +15419,20 @@ class StudesticsApp(tk.Tk):
         def work():
 
             try:
+
                 self._gemini_client()
+
+                # Build the request types now, so the first message
+                # doesn't pay for (or trip over) it.
+                from google.genai import types
+
+                types.GenerateContentConfig(max_output_tokens=16)
+
+                types.Content(
+                    role="user",
+                    parts=[types.Part(text="hi")]
+                )
+
             except Exception:
                 self._gemini_warm = False
 
@@ -14435,7 +15446,7 @@ class StudesticsApp(tk.Tk):
         without this call, or anything unexpected before the first
         word). Real errors after words have arrived are raised."""
 
-        if getattr(self, "_fast_path_off", False):
+        if time.time() < getattr(self, "_fast_path_off_until", 0):
             return False
 
         try:
@@ -14508,7 +15519,8 @@ class StudesticsApp(tk.Tk):
 
         except Exception:
 
-            self._fast_path_off = True
+            # This SDK can't do it at all: don't try again.
+            self._fast_path_off_until = float("inf")
 
             return False
 
@@ -14579,16 +15591,32 @@ class StudesticsApp(tk.Tk):
                     or "not found" in text
                 )
 
-                if missing:
+                busy = any(
+                    word in text for word in (
+                        "503", "500", "unavailable", "overloaded",
+                        "internal", "timeout", "timed out", "deadline",
+                        "429", "resource_exhausted", "connection",
+                        "disconnected", "reset"
+                    )
+                )
+
+                # Model missing, or briefly busy / slow: try the next
+                # model. A busy moment must not push the rest of the
+                # session onto the slow path.
+                if missing or busy:
                     continue
 
-                # Key, quota and network problems read the same on
-                # either path: let the older path report them.
-                self._fast_path_off = True
+                # Key and other errors read the same on either path:
+                # let the older path report them (and look again soon).
+                self._fast_path_off_until = time.time() + 60
 
                 return False
 
         if used_model is None:
+
+            # Every model was busy; look again in a moment.
+            self._fast_path_off_until = time.time() + 20
+
             return False
 
         if used_model != self.get_gemini_model():
@@ -14620,12 +15648,217 @@ class StudesticsApp(tk.Tk):
 
         return True
 
+    # --------------------------------------------------------
+    # /notes command in AI Chat
+    # --------------------------------------------------------
+
+    def _plain_notes(self, text):
+        """The Notes page is a plain text editor, so strip Markdown."""
+
+        out = []
+
+        for raw in str(text or "").replace("\r", "").split("\n"):
+
+            line = raw.rstrip()
+
+            stripped = line.lstrip()
+
+            if stripped.startswith("#"):
+                line = stripped.lstrip("#").strip()
+
+            line = line.replace("**", "").replace("__", "")
+            line = line.replace("`", "")
+
+            if line.lstrip().startswith("* "):
+
+                indent = line[:len(line) - len(line.lstrip())]
+
+                line = indent + "- " + line.lstrip()[2:]
+
+            out.append(line)
+
+        return "\n".join(out).strip()
+
+    def _append_to_notes(self, text):
+        """Adds text to the end of what is in the Notes editor (the
+        saved draft), marked as unsaved."""
+
+        old = getattr(self, "_note_text", None)
+
+        if old is None:
+            old = self.db.get_setting("notes_draft", "")
+
+        # The Notes page reads these when it opens.
+        if not hasattr(self, "_note_path"):
+            self._note_path = self.db.get_setting("notes_file", "")
+
+        new = (
+            (old.rstrip("\n") + "\n\n" if old.strip() else "")
+            + text.strip()
+            + "\n"
+        )
+
+        self._note_text = new
+
+        self.db.set_setting("notes_draft", new)
+        self.db.set_setting("notes_dirty", "1")
+
+        self._note_dirty = True
+
+    def _notes_command(self, user_text):
+        """/notes <topic>  writes study notes on the topic into Notes.
+        /notes  alone saves the AI's last answer as notes."""
+
+        topic = user_text.strip()[len("/notes"):].strip()
+
+        reply, error = "", None
+
+        try:
+
+            if not topic:
+
+                last = ""
+
+                for row in reversed(self.db.get_messages()):
+
+                    content = (row["content"] or "").strip()
+
+                    if (
+                        row["role"] != "user"
+                        and content
+                        and not content.startswith((
+                            "Gemini", "(Interrupted)", "Added ",
+                            "Use /notes"
+                        ))
+                    ):
+                        last = content
+                        break
+
+                if not last:
+
+                    reply = (
+                        "Use /notes followed by what you want notes on, "
+                        "for example:  /notes photosynthesis, class 10\n\n"
+                        "I write them into your Notes tab. Then press "
+                        "Quiz me there to be quizzed on them. Typing "
+                        "/notes on its own saves my last answer as notes."
+                    )
+
+                else:
+
+                    self._append_to_notes(self._plain_notes(last))
+
+                    reply = (
+                        "Added my last answer to your Notes tab. "
+                        "Open Notes and press Quiz me to be quizzed."
+                    )
+
+            else:
+
+                client = self._gemini_client()
+
+                prompt = (
+                    "Write clear, well-organised study notes for a "
+                    f"student on: {topic}\n\n"
+                    "Plain text only. No Markdown symbols at all (no "
+                    "asterisks, no # headings, no backticks). Start "
+                    "with a one-line title, then short sections, each "
+                    "with a heading line followed by '- ' bullet "
+                    "points. Include key definitions, formulas and a "
+                    "short example where it helps. About 250 to 400 "
+                    "words."
+                )
+
+                text = ""
+
+                last_error = None
+
+                for model_name in self._gemini_model_candidates():
+
+                    try:
+
+                        result = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config={
+                                "max_output_tokens": 2000,
+                                "http_options": {"timeout": 90000}
+                            }
+                        )
+
+                        text = (result.text or "").strip()
+
+                        if text:
+                            break
+
+                    except Exception as exc:
+
+                        last_error = exc
+
+                if not text:
+
+                    raise last_error or RuntimeError(
+                        "Gemini returned no notes."
+                    )
+
+                notes = self._plain_notes(text)
+
+                self._append_to_notes(notes)
+
+                reply = (
+                    f"Added notes on \"{topic}\" to your Notes tab "
+                    f"({len(notes.split())} words). Open Notes to read "
+                    "or edit them, and press Quiz me to be quizzed."
+                )
+
+            self.db.add_message("assistant", reply)
+
+        except Exception as exc:
+
+            error = str(exc)
+
+        self.after(0, lambda: self._notes_cmd_done(reply, error))
+
+    def _notes_cmd_done(self, reply, error):
+
+        self.chat_busy = False
+
+        self.remove_typing_bubble()
+
+        try:
+            self.chat_send_button.configure(state="normal")
+        except Exception:
+            pass
+
+        if error:
+
+            self.chat_status.configure(text="Error", fg=RED)
+
+            self.add_chat_bubble(
+                "assistant",
+                "Couldn't write the notes: " + error[:300]
+            )
+
+        else:
+
+            self.chat_status.configure(text="Notes added", fg=GREEN)
+
+            self.add_chat_bubble("assistant", reply)
+
+        self.scroll_chat()
+
     def ai_worker(
         self,
         user_text
     ):
 
         try:
+
+            if user_text.strip().lower().startswith("/notes"):
+
+                self._notes_command(user_text)
+
+                return
 
             started_at = time.time()
 
@@ -15850,46 +17083,551 @@ class StudesticsApp(tk.Tk):
             pady=(0, 3)
         )
 
-        model_entry_row = tk.Frame(
-            model_row,
-            bg=PANEL
-        )
-
-        model_entry_row.pack(
-            fill="x"
-        )
-
         self.gemini_model_var = tk.StringVar(
             value=self.get_gemini_model()
         )
 
-        model_entry = self.make_entry(
-            model_entry_row,
-            self.gemini_model_var
+        # ---- model dropdown (slides open) ----
+        model_names = []
+
+        for name in (
+            [GEMINI_MODEL]
+            + list(GEMINI_MODEL_FALLBACKS)
+            + ["gemini-flash-lite-latest"]
+        ):
+
+            if name not in model_names:
+                model_names.append(name)
+
+        builtin_names = list(model_names)
+
+        # Names the student typed under "Custom..." are kept in the list.
+        try:
+
+            import json
+
+            for name in json.loads(
+                self.db.get_setting("custom_models", "[]")
+            ):
+
+                if isinstance(name, str) and name not in model_names:
+                    model_names.append(name)
+
+        except Exception:
+            pass
+
+        if self.gemini_model_var.get() not in model_names:
+            model_names.append(self.gemini_model_var.get())
+
+        def model_note(name):
+
+            if name == GEMINI_MODEL:
+                return "Default"
+
+            if name not in builtin_names:
+                return "Custom"
+
+            if "lite" in name:
+                return "Fast, big free quota"
+
+            return "Smarter, smaller free quota"
+
+        box_row = tk.Frame(model_row, bg=PANEL)
+
+        box_row.pack(fill="x")
+
+        dropdown = tk.Frame(
+            box_row,
+            bg=PANEL_2,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            cursor="hand2"
         )
 
-        model_entry.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            ipady=9
+        dropdown.pack(side="left", fill="x", expand=True)
+
+        current_label = tk.Label(
+            dropdown,
+            textvariable=self.gemini_model_var,
+            bg=PANEL_2,
+            fg=TEXT,
+            font=("Segoe UI", 10),
+            anchor="w",
+            padx=12,
+            pady=10
         )
 
-        self.make_button(
-            model_entry_row,
+        current_label.pack(side="left", fill="x", expand=True)
+
+        arrow = tk.Label(
+            dropdown,
+            text="\u25BE",
+            bg=PANEL_2,
+            fg=MUTED,
+            font=("Segoe UI", 11),
+            padx=12
+        )
+
+        arrow.pack(side="right")
+
+        def tint(colour):
+
+            for widget in (dropdown, current_label, arrow):
+                widget.configure(bg=colour)
+
+        edit = {"entry": None}
+
+        def choose_model(name):
+
+            if name is None:
+
+                enter_edit()
+
+                return
+
+            self.gemini_model_var.set(name)
+
+            self.db.set_setting("gemini_model", name)
+
+            self.settings_status.configure(
+                text=f"Model set to {name}.",
+                fg=GREEN
+            )
+
+        def leave_edit():
+
+            entry = edit["entry"]
+
+            edit["entry"] = None
+
+            if entry is not None:
+                entry.destroy()
+
+            save_button.canvas.pack_forget()
+
+            current_label.pack(side="left", fill="x", expand=True)
+
+            arrow.pack(side="right")
+
+            dropdown.configure(cursor="hand2")
+
+        def save_custom():
+
+            entry = edit["entry"]
+
+            name = entry.get().strip() if entry is not None else ""
+
+            leave_edit()
+
+            if not name:
+                return
+
+            if name not in model_names:
+
+                model_names.append(name)
+
+                try:
+
+                    import json
+
+                    self.db.set_setting(
+                        "custom_models",
+                        json.dumps([
+                            n for n in model_names
+                            if n not in builtin_names
+                        ])
+                    )
+
+                except Exception:
+                    pass
+
+            choose_model(name)
+
+        def remove_custom(name):
+
+            if name in model_names and name not in builtin_names:
+                model_names.remove(name)
+
+            try:
+
+                import json
+
+                self.db.set_setting(
+                    "custom_models",
+                    json.dumps([
+                        n for n in model_names
+                        if n not in builtin_names
+                    ])
+                )
+
+            except Exception:
+                pass
+
+            # Removing the model in use goes back to the default.
+            if self.gemini_model_var.get() == name:
+                choose_model(GEMINI_MODEL)
+
+        save_button = self.make_button(
+            box_row,
             "Save",
-            self.save_gemini_model,
+            save_custom,
             width=9
-        ).pack(
-            side="left",
-            padx=8
         )
+
+        def enter_edit():
+
+            if edit["entry"] is not None:
+                return
+
+            current_label.pack_forget()
+            arrow.pack_forget()
+
+            dropdown.configure(cursor="")
+
+            entry = tk.Entry(
+                dropdown,
+                bg=PANEL_2,
+                fg=TEXT,
+                insertbackground=TEXT,
+                relief="flat",
+                bd=0,
+                highlightthickness=0,
+                font=("Segoe UI", 10)
+            )
+
+            entry.pack(
+                side="left",
+                fill="x",
+                expand=True,
+                padx=12,
+                ipady=10
+            )
+
+            edit["entry"] = entry
+
+            save_button.pack(side="left", padx=(8, 0))
+
+            entry.bind("<Return>", lambda e: save_custom())
+            entry.bind("<Escape>", lambda e: leave_edit())
+
+            entry.focus_set()
+
+        menu = {"win": None}
+
+        def close_menu(animate=True):
+
+            win = menu["win"]
+
+            menu["win"] = None
+
+            if win is None:
+                return
+
+            def done():
+
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+            if not animate:
+                done()
+                return
+
+            try:
+
+                width, full, left, top = win._geo
+
+                steps = 5
+
+                def step(i=steps):
+
+                    try:
+
+                        t = i / steps
+
+                        win.geometry(
+                            f"{width}x{full}+{left}+{top - int(6 * (1 - t))}"
+                        )
+
+                        win.attributes("-alpha", t)
+
+                        if i <= 0:
+                            done()
+                        else:
+                            win.after(12, lambda: step(i - 1))
+
+                    except Exception:
+                        done()
+
+                step()
+
+            except Exception:
+                done()
+
+        def open_menu(event=None):
+
+            if edit["entry"] is not None:
+                return
+
+            if menu["win"] is not None:
+
+                close_menu()
+
+                return
+
+            win = tk.Toplevel(self)
+
+            win.withdraw()
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.attributes("-alpha", 0.0)
+            win.configure(bg=BORDER)
+
+            inner = tk.Frame(win, bg=PANEL_2)
+
+            inner.pack(padx=1, pady=1, fill="both")
+
+            tk.Frame(inner, bg=PANEL_2, height=4).pack()
+
+            now = self.gemini_model_var.get()
+
+            def add_row(name, text, note):
+
+                row = tk.Frame(inner, bg=PANEL_2, cursor="hand2")
+
+                row.pack(fill="x", padx=4, pady=1)
+
+                mark = tk.Label(
+                    row,
+                    text="\u2713" if name == now else "",
+                    bg=PANEL_2,
+                    fg=PURPLE_HOVER,
+                    font=("Segoe UI", 10, "bold"),
+                    width=2
+                )
+
+                mark.pack(side="left", padx=(6, 0))
+
+                title = tk.Label(
+                    row,
+                    text=text,
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    font=("Segoe UI", 10),
+                    anchor="w",
+                    pady=8
+                )
+
+                title.pack(side="left")
+
+                cross = None
+
+                if name is not None and name not in builtin_names:
+
+                    cross = tk.Label(
+                        row,
+                        text="\u2715",
+                        bg=PANEL_2,
+                        fg=MUTED_2,
+                        font=("Segoe UI", 9),
+                        padx=10,
+                        cursor="hand2"
+                    )
+
+                    cross.pack(side="right")
+
+                    cross.bind(
+                        "<Enter>",
+                        lambda e: cross.configure(fg=RED)
+                    )
+
+                    cross.bind(
+                        "<Leave>",
+                        lambda e: cross.configure(fg=MUTED_2)
+                    )
+
+                    cross.bind(
+                        "<ButtonRelease-1>",
+                        lambda e, n=name: (
+                            close_menu(),
+                            remove_custom(n)
+                        )
+                    )
+
+                hint = tk.Label(
+                    row,
+                    text=note,
+                    bg=PANEL_2,
+                    fg=MUTED_2,
+                    font=("Segoe UI", 8),
+                    padx=12
+                )
+
+                hint.pack(side="right")
+
+                parts = (row, mark, title, hint)
+
+                def paint(colour):
+
+                    for part in parts + ((cross,) if cross else ()):
+                        part.configure(bg=colour)
+
+                for part in parts:
+
+                    part.bind("<Enter>", lambda e: paint(HOVER_BG))
+                    part.bind("<Leave>", lambda e: paint(PANEL_2))
+
+                    part.bind(
+                        "<ButtonRelease-1>",
+                        lambda e, n=name: (
+                            close_menu(),
+                            choose_model(n)
+                        )
+                    )
+
+            for name in model_names:
+                add_row(name, name, model_note(name))
+
+            add_row(None, "Custom\u2026", "Type any model name")
+
+            tk.Frame(inner, bg=PANEL_2, height=4).pack()
+
+            win.update_idletasks()
+
+            width = dropdown.winfo_width()
+            full = win.winfo_reqheight()
+            left = dropdown.winfo_rootx()
+            top = dropdown.winfo_rooty() + dropdown.winfo_height() + 4
+
+            win._geo = (width, full, left, top)
+
+            anchor = (dropdown.winfo_rootx(), dropdown.winfo_rooty())
+
+            # The window keeps its full size the whole time (resizing a
+            # window every frame is what made it stutter); it only
+            # fades in and slides down a few pixels.
+            win.geometry(f"{width}x{full}+{left}+{top - 10}")
+
+            win.attributes("-alpha", 0.0)
+
+            win.deiconify()
+            win.lift()
+
+            menu["win"] = win
+
+            self._model_menu_closer = lambda: close_menu(False)
+
+            steps = 7
+
+            def grow(i=1):
+
+                try:
+
+                    if menu["win"] is not win:
+                        return
+
+                    t = 1 - (1 - i / steps) ** 3
+
+                    win.geometry(
+                        f"{width}x{full}+{left}+{top - int(10 * (1 - t))}"
+                    )
+
+                    win.attributes("-alpha", t)
+
+                    if i < steps:
+                        win.after(14, lambda: grow(i + 1))
+
+                except Exception:
+                    pass
+
+            grow()
+
+            started = time.time()
+
+            def watch():
+
+                try:
+
+                    if menu["win"] is not win:
+                        return
+
+                    if (
+                        dropdown.winfo_rootx(),
+                        dropdown.winfo_rooty()
+                    ) != anchor:
+
+                        close_menu(False)
+
+                        return
+
+                    import ctypes
+
+                    pressed = (
+                        ctypes.windll.user32.GetAsyncKeyState(0x01)
+                        & 0x8000
+                    )
+
+                    if pressed and time.time() - started > 0.2:
+
+                        px, py = win.winfo_pointerxy()
+
+                        def inside(widget):
+
+                            return (
+                                widget.winfo_rootx() <= px
+                                < widget.winfo_rootx()
+                                + widget.winfo_width()
+                                and widget.winfo_rooty() <= py
+                                < widget.winfo_rooty()
+                                + widget.winfo_height()
+                            )
+
+                        # A click on a row is handled by the row itself.
+                        if not inside(win) and not inside(dropdown):
+                            close_menu()
+                            return
+
+                    win.after(25, watch)
+
+                except Exception:
+                    pass
+
+            win.after(60, watch)
+
+        for widget in (dropdown, current_label, arrow):
+
+            widget.bind("<Button-1>", open_menu)
+            widget.bind("<Enter>", lambda e: tint(HOVER_BG))
+            widget.bind("<Leave>", lambda e: tint(PANEL_2))
+
+        dropdown.bind("<Destroy>", lambda e: close_menu(False))
+
+        self._model_menu_closer = lambda: close_menu(False)
+
+        if not getattr(self, "_model_wheel_bound", False):
+
+            self._model_wheel_bound = True
+
+            def wheel_closes(event):
+
+                closer = getattr(self, "_model_menu_closer", None)
+
+                if closer is not None:
+
+                    try:
+                        closer()
+                    except Exception:
+                        pass
+
+            self.bind_all("<MouseWheel>", wheel_closes, add="+")
 
         tk.Label(
             panel,
             text=(
-                "If Gemini ever renames or retires a model, put the "
-                "new name here — no code changes needed. Flash-Lite "
+                "If Gemini ever renames or retires a model, choose "
+                "Custom and type the new name — no code changes "
+                "needed. Flash-Lite "
                 "models get a much bigger free-tier daily allowance "
                 "than regular Flash (often 500+ requests/day vs ~20), "
                 "if Gemini chat is burning through your free quota "
@@ -17197,7 +18935,8 @@ class StudesticsApp(tk.Tk):
                 "check",
                 BLUE,
                 "Plan your tasks",
-                "Add tasks with a deadline, a priority and a reminder. "
+                "Add tasks with a deadline, a priority and a reminder, "
+                "repeating or just once at the time you choose. "
                 "Overdue and due-soon ones stand out so nothing slips."
             ),
             (
@@ -17216,11 +18955,21 @@ class StudesticsApp(tk.Tk):
                 "is kept even if you close the app."
             ),
             (
+                "note",
+                GREEN,
+                "Quiz yourself",
+                "Press Quiz me in Notes and the AI turns your notes "
+                "into a quiz, from 1 to 50 questions. Short on notes? "
+                "In AI Chat type /notes and a topic, and the AI writes "
+                "them into Notes for you."
+            ),
+            (
                 "chat",
                 GREEN,
                 "Ask for help",
-                "Chat with Gemini about your plans and deadlines. It "
-                "needs a free API key. The next page shows how to get one."
+                "Chat with Gemini about your plans, deadlines and study "
+                "topics, or type /notes to save notes. It needs a free "
+                "API key. The next page shows how to get one."
             ),
             (
                 "gear",
@@ -18019,12 +19768,40 @@ class StudesticsApp(tk.Tk):
                 pending = self._deadline_sweep(self.db.get_tasks(False))
 
                 due = []
+                once_due = []
                 seen = set()
 
                 for task in pending:
 
                     task_id = task["id"]
                     seen.add(task_id)
+
+                    # One-time reminder: fires once at its date and
+                    # time (or when the app next runs, if it was
+                    # closed then), and never repeats.
+                    try:
+                        at_text = task["remind_at"] or ""
+                    except (KeyError, IndexError):
+                        at_text = ""
+
+                    if at_text:
+
+                        try:
+
+                            when = datetime.strptime(
+                                at_text, "%Y-%m-%d %H:%M:%S"
+                            )
+
+                            if (
+                                not task["remind_done"]
+                                and datetime.now() >= when
+                            ):
+                                once_due.append(task)
+
+                        except Exception:
+                            pass
+
+                        continue
 
                     # A task's clock starts the first time we see it
                     # (app start or task creation), so nothing fires
@@ -18041,12 +19818,15 @@ class StudesticsApp(tk.Tk):
                     if task_id not in seen:
                         del self._reminder_last[task_id]
 
-                if due:
+                if due or once_due:
 
                     for task in due:
                         self._reminder_last[task["id"]] = now
 
-                    self.show_reminder(due)
+                    for task in once_due:
+                        self.db.mark_reminded(task["id"])
+
+                    self.show_reminder(due + once_due)
 
         except Exception:
             pass
@@ -18887,7 +20667,9 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 10, "bold")
+            font=("Segoe UI", 10, "bold"),
+            wraplength=510,
+            justify="left"
         )
 
         status.pack(anchor="w", pady=(10, 0))
@@ -19443,6 +21225,9 @@ class StudesticsApp(tk.Tk):
                 elif action == "float":
                     self.toggle_float()
 
+                elif isinstance(action, tuple) and action[0] == "menu":
+                    self.show_tray_menu(action[1], action[2])
+
                 elif action == "quit":
                     self.quit_app()
                     return
@@ -19454,7 +21239,7 @@ class StudesticsApp(tk.Tk):
             pass
 
         if not self._quitting:
-            self.after(300, self._poll_tray)
+            self.after(100, self._poll_tray)
 
     def _set_app_icon(self):
         """Window / taskbar icon: the packaged studestics.ico if there
@@ -19510,6 +21295,159 @@ class StudesticsApp(tk.Tk):
         except Exception:
             pass
 
+    def show_tray_menu(self, x, y):
+        """A small themed menu next to the tray icon."""
+
+        old = getattr(self, "_tray_menu_win", None)
+
+        if old is not None:
+
+            try:
+                old.destroy()
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self)
+
+        self._tray_menu_win = win
+
+        win.withdraw()
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=BORDER)
+
+        inner = tk.Frame(win, bg=PANEL)
+
+        inner.pack(padx=1, pady=1)
+
+        def close(event=None):
+
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        def add(text, command, bold=False, colour=TEXT):
+
+            row = tk.Label(
+                inner,
+                text=text,
+                bg=PANEL,
+                fg=colour,
+                font=("Segoe UI", 10, "bold" if bold else "normal"),
+                anchor="w",
+                padx=14,
+                pady=8,
+                cursor="hand2"
+            )
+
+            row.pack(fill="x", padx=6, pady=1)
+
+            row.bind("<Enter>", lambda e: row.configure(bg=HOVER_BG))
+            row.bind("<Leave>", lambda e: row.configure(bg=PANEL))
+
+            row.bind(
+                "<ButtonRelease-1>",
+                lambda e: (close(), command())
+            )
+
+        tk.Frame(inner, bg=PANEL, height=5).pack()
+
+        add("Open Studestics", self.restore_window, bold=True)
+
+        add(
+            "Floating clock: On" if self.float_on
+            else "Floating clock: Off",
+            self.toggle_float
+        )
+
+        tk.Frame(inner, bg=BORDER, height=1).pack(
+            fill="x", padx=14, pady=4
+        )
+
+        add("Quit", self.quit_app, colour=RED)
+
+        tk.Frame(inner, bg=PANEL, height=5).pack()
+
+        win.update_idletasks()
+
+        width = win.winfo_reqwidth()
+        height = win.winfo_reqheight()
+
+        left = max(
+            8, min(x - width // 2, self.winfo_screenwidth() - width - 8)
+        )
+
+        top = y - height - 12
+
+        if top < 8:
+            top = y + 12
+
+        win.geometry(f"{width}x{height}+{left}+{top}")
+
+        try:
+
+            import ctypes
+
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or \
+                win.winfo_id()
+
+            # Rounded corners on Windows 11.
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4
+            )
+
+        except Exception:
+            pass
+
+        win.deiconify()
+        win.lift()
+
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+
+        win.bind("<Escape>", close)
+
+        started = time.time()
+
+        def watch():
+
+            try:
+
+                if not win.winfo_exists():
+                    return
+
+                import ctypes
+
+                pressed = (
+                    ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000
+                    or ctypes.windll.user32.GetAsyncKeyState(0x02) & 0x8000
+                )
+
+                if pressed and time.time() - started > 0.25:
+
+                    px, py = win.winfo_pointerxy()
+
+                    inside = (
+                        win.winfo_rootx() <= px
+                        < win.winfo_rootx() + width
+                        and win.winfo_rooty() <= py
+                        < win.winfo_rooty() + height
+                    )
+
+                    if not inside:
+                        close()
+                        return
+
+                win.after(50, watch)
+
+            except Exception:
+                pass
+
+        win.after(100, watch)
+
     def hide_to_tray(self):
 
         self.withdraw()
@@ -19540,7 +21478,37 @@ class StudesticsApp(tk.Tk):
                 )
             )
 
-            self._tray_icon = pystray.Icon(
+            queue_ref = self._tray_queue
+
+            class ThemedIcon(pystray.Icon):
+                """Right-click opens Studestics' own menu (drawn in the
+                app's theme) instead of the plain Windows one."""
+
+                def _on_notify(self, wparam, lparam):
+
+                    if lparam == 0x0205:    # WM_RBUTTONUP
+
+                        try:
+
+                            import ctypes
+                            from ctypes import wintypes
+
+                            point = wintypes.POINT()
+
+                            ctypes.windll.user32.GetCursorPos(
+                                ctypes.byref(point)
+                            )
+
+                            queue_ref.put(("menu", point.x, point.y))
+
+                            return
+
+                        except Exception:
+                            pass
+
+                    return super()._on_notify(wparam, lparam)
+
+            self._tray_icon = ThemedIcon(
                 "studestics",
                 img,
                 "Studestics — reminders running",
@@ -19717,7 +21685,79 @@ def _acquire_single_instance():
 _SINGLE_INSTANCE_HANDLES = []
 
 
+def _install_crash_log():
+    """Writes errors (and hard crashes) to ~/.studestics/crash.log so
+    a problem can be read afterwards instead of the app just closing."""
+
+    import datetime
+    import traceback
+
+    log_path = APP_DIR / "crash.log"
+
+    def write(title, text):
+
+        try:
+
+            with open(log_path, "a", encoding="utf-8") as handle:
+
+                handle.write(
+                    f"\n--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S}"
+                    f"  v{VERSION}  {title}\n{text}\n"
+                )
+
+        except Exception:
+            pass
+
+    try:
+
+        if log_path.exists() and log_path.stat().st_size > 200000:
+            log_path.unlink()
+
+    except Exception:
+        pass
+
+    try:
+
+        import faulthandler
+
+        handle = open(log_path, "a", encoding="utf-8")
+
+        faulthandler.enable(file=handle, all_threads=True)
+
+        _SINGLE_INSTANCE_HANDLES.append(handle)
+
+    except Exception:
+        pass
+
+    def on_error(kind, value, trace):
+
+        write(kind, "".join(traceback.format_exception(kind, value, trace)))
+
+    sys.excepthook = on_error
+
+    try:
+
+        threading.excepthook = lambda args: on_error(
+            args.exc_type, args.exc_value, args.exc_traceback
+        )
+
+    except Exception:
+        pass
+
+    return write
+
+
 def main():
+
+    write_log = _install_crash_log()
+
+    # Background threads get a big stack. Building Gemini's data types
+    # (pydantic) recurses deeply and crashed the app hard in a normal
+    # small-stack thread.
+    try:
+        threading.stack_size(64 * 1024 * 1024)
+    except Exception:
+        pass
 
     ok, show_event = _acquire_single_instance()
 
@@ -19740,6 +21780,17 @@ def main():
         pass
 
     app = StudesticsApp()
+
+    def tk_error(kind, value, trace):
+
+        import traceback
+
+        write_log(
+            "Tk callback",
+            "".join(traceback.format_exception(kind, value, trace))
+        )
+
+    app.report_callback_exception = tk_error
 
     # Started by Windows at sign-in: never show the window at all.
     if "--background" in sys.argv:
