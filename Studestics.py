@@ -23240,9 +23240,75 @@ class StudesticsApp(tk.Tk):
         if not self._quitting:
             self.after(12 * 3600 * 1000, self._auto_update_tick)
 
+    def _notes_box(self, parent, text):
+        """The release notes in a box you can scroll with the mouse
+        wheel, so the whole list can be read."""
+
+        frame = tk.Frame(parent, bg=BG)
+
+        box = tk.Text(
+            frame,
+            width=64,
+            height=11,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wrap="word",
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=0,
+            pady=0,
+            cursor="arrow",
+            spacing1=1,
+            spacing3=1
+        )
+
+        box.insert("1.0", self._clean_notes(text, max_lines=None))
+
+        box.configure(state="disabled")
+
+        bar = tk.Canvas(
+            frame,
+            width=6,
+            bg=BG,
+            highlightthickness=0,
+            bd=0
+        )
+
+        def update_bar(first, last):
+
+            first, last = float(first), float(last)
+
+            bar.delete("all")
+
+            if first <= 0.0 and last >= 1.0:
+                return
+
+            height = max(1, bar.winfo_height())
+
+            top = first * height
+            bottom = max(top + 24, last * height)
+
+            bar.create_rectangle(
+                0, top, 6, min(height, bottom),
+                fill=BORDER, outline=""
+            )
+
+        box.configure(yscrollcommand=update_bar)
+
+        box.pack(side="left", fill="both", expand=True)
+
+        bar.pack(side="right", fill="y", padx=(8, 0))
+
+        frame.after(200, lambda: update_bar(*box.yview()))
+
+        return frame
+
     def _clean_notes(self, text, max_lines=7):
         """Release notes are written in Markdown; show them as plain
-        lines."""
+        lines. max_lines=None keeps all of them, with a blank line
+        between sections."""
 
         lines = []
 
@@ -23251,6 +23317,10 @@ class StudesticsApp(tk.Tk):
             line = raw.strip()
 
             if not line:
+
+                if max_lines is None and lines and lines[-1] != "":
+                    lines.append("")
+
                 continue
 
             line = line.lstrip("#").strip()
@@ -23261,10 +23331,13 @@ class StudesticsApp(tk.Tk):
 
             lines.append(line)
 
+        while lines and lines[-1] == "":
+            lines.pop()
+
         if not lines:
             return "No release notes."
 
-        if len(lines) > max_lines:
+        if max_lines is not None and len(lines) > max_lines:
             lines = lines[:max_lines] + ["…"]
 
         return "\n".join(lines)
@@ -23515,15 +23588,9 @@ class StudesticsApp(tk.Tk):
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w")
 
-        tk.Label(
-            body,
-            text=self._clean_notes(info["notes"]),
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            wraplength=510,
-            justify="left"
-        ).pack(anchor="w", pady=(14, 0))
+        self._notes_box(body, info["notes"]).pack(
+            anchor="w", fill="x", pady=(14, 0)
+        )
 
         can_install = self._can_self_update(info)
 
@@ -23682,15 +23749,9 @@ class StudesticsApp(tk.Tk):
             justify="left"
         ).pack(anchor="w")
 
-        tk.Label(
-            body,
-            text=self._clean_notes(info["notes"]),
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            wraplength=510,
-            justify="left"
-        ).pack(anchor="w", pady=(14, 0))
+        self._notes_box(body, info["notes"]).pack(
+            anchor="w", fill="x", pady=(14, 0)
+        )
 
         go = self.make_button(
             buttons,
@@ -24421,26 +24482,6 @@ class StudesticsApp(tk.Tk):
                 target=self._tray_icon.run,
                 daemon=True
             ).start()
-
-        if not self._tray_hint_shown:
-
-            self._tray_hint_shown = True
-
-            def hint():
-
-                try:
-
-                    self._tray_icon.notify(
-                        "Still running in the background — reminders "
-                        "will keep coming. Right-click the tray icon "
-                        "to quit.",
-                        "Studestics"
-                    )
-
-                except Exception:
-                    pass
-
-            self.after(1000, hint)
 
     def close_app(self):
 
