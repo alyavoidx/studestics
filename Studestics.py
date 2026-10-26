@@ -8,6 +8,7 @@ import re
 import time
 import math
 import queue
+import random
 import gc
 from pathlib import Path
 from datetime import datetime, date, timedelta
@@ -76,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -130,6 +131,18 @@ THEMES = {
         "panel2": "#2B1A24", "border": "#3F2733", "text": "#FBEAF0",
         "muted": "#BC9BA9", "muted2": "#876272",
         "accent": "#C93B72", "accent_hover": "#F472A6"
+    },
+    "Sunset": {
+        "bg": "#140C0A", "sidebar": "#190F0C", "panel": "#201410",
+        "panel2": "#2D1C16", "border": "#43291F", "text": "#FFF0E6",
+        "muted": "#C4A394", "muted2": "#8C6B5C",
+        "accent": "#E8743B", "accent_hover": "#FFA06B"
+    },
+    "Ice": {
+        "bg": "#07121A", "sidebar": "#0A1822", "panel": "#0D1F2B",
+        "panel2": "#143042", "border": "#1F4A60", "text": "#E9F8FF",
+        "muted": "#93B8CB", "muted2": "#5E8499",
+        "accent": "#38A3D8", "accent_hover": "#6CC4F0"
     }
 }
 
@@ -240,7 +253,8 @@ GEMINI_MODEL = "gemini-3.5-flash-lite"
 # conversation before it's started fresh (long chains re-send the whole
 # history to Gemini on every turn, which burns quota).
 AI_CONTEXT_ITEMS = 5
-AI_MAX_OUTPUT_TOKENS = 400
+AI_MAX_OUTPUT_TOKENS = 16384
+AI_NOTES_MAX_OUTPUT_TOKENS = 32768
 AI_RESET_AFTER_TURNS = 8
 
 GEMINI_MODEL_FALLBACKS = [
@@ -409,6 +423,271 @@ def mci_send(command):
     error = ctypes.windll.winmm.mciSendStringW(command, buffer, 254, 0)
 
     return error, buffer.value
+
+
+_LOFI_REV = "1"
+
+
+def lofi_path():
+    """A calm lofi loop (about a minute) made by the app itself, so
+    nothing has to be downloaded. Written once, then reused."""
+
+    import wave
+    import array
+    import random
+
+    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    path = SOUNDS_DIR / f"lofi_v{_LOFI_REV}.wav"
+
+    if path.exists():
+        return path
+
+    rate = 22050
+    beat = 60.0 / 72
+    bar = beat * 4
+    rng = random.Random(11)
+    two_pi = 2 * math.pi
+
+    def hz(midi):
+        return 440.0 * 2 ** ((midi - 69) / 12.0)
+
+    # (bass note, chord notes, melody notes that fit it)
+    progression = [
+        (38, (53, 57, 60, 64), (69, 72, 74, 76)),   # Dm9
+        (43, (53, 59, 62, 64), (67, 71, 74, 76)),   # G13
+        (36, (55, 59, 62, 64), (67, 71, 74, 79)),   # Cmaj9
+        (45, (55, 59, 60, 64), (69, 72, 76, 79)),   # Am9
+    ]
+
+    # ---- one chord: soft electric-piano notes with a little tape wobble
+    chord_len = int(rate * bar * 2)
+
+    warp = [
+        i / rate + 0.00095 * math.sin(math.pi * i / rate)
+        for i in range(chord_len)
+    ]
+
+    envelope = []
+    bright = []
+
+    for i in range(chord_len):
+
+        t = i / rate
+
+        attack = min(1.0, t / 0.012)
+        release = min(1.0, (chord_len - i) / (rate * 0.35))
+
+        envelope.append(attack * release * math.exp(-t * 0.75))
+        bright.append(math.exp(-t * 5.0))
+
+    def chord_wave(notes):
+
+        wave_out = [0.0] * chord_len
+
+        for note in notes:
+
+            f = hz(note) * two_pi
+
+            for i in range(chord_len):
+
+                w = warp[i] * f
+
+                wave_out[i] += envelope[i] * (
+                    math.sin(w) + 0.32 * bright[i] * math.sin(2 * w)
+                )
+
+        return [v * 0.11 for v in wave_out]
+
+    chord_waves = [chord_wave(notes) for _, notes, _ in progression]
+
+    # ---- bass, kick, snare, hat, melody pluck (each made once)
+    def bass_wave(note, beats):
+
+        n = int(rate * beat * beats)
+        f = hz(note) * two_pi
+
+        return [
+            0.34 * math.sin(f * i / rate)
+            * min(1.0, i / (rate * 0.01))
+            * math.exp(-i / rate * 2.4)
+            * min(1.0, (n - i) / (rate * 0.08))
+            for i in range(n)
+        ]
+
+    def pluck_wave(note):
+
+        n = int(rate * 1.1)
+        f = hz(note) * two_pi
+
+        return [
+            0.15 * (
+                math.sin(f * i / rate)
+                + 0.25 * math.sin(2 * f * i / rate)
+                * math.exp(-i / rate * 8)
+            )
+            * min(1.0, i / (rate * 0.008))
+            * math.exp(-i / rate * 3.2)
+            for i in range(n)
+        ]
+
+    kick = []
+
+    n = int(rate * 0.22)
+    phase = 0.0
+
+    for i in range(n):
+
+        t = i / rate
+
+        phase += two_pi * (45 + 85 * math.exp(-t * 28)) / rate
+
+        kick.append(0.8 * math.sin(phase) * math.exp(-t * 15))
+
+    snare = []
+
+    n = int(rate * 0.2)
+    soft = 0.0
+
+    for i in range(n):
+
+        t = i / rate
+
+        soft += 0.45 * (rng.uniform(-1, 1) - soft)
+
+        snare.append(
+            (0.32 * soft + 0.12 * math.sin(two_pi * 190 * t))
+            * math.exp(-t * 22)
+        )
+
+    hat = []
+
+    n = int(rate * 0.06)
+    last = 0.0
+
+    for i in range(n):
+
+        t = i / rate
+
+        noise = rng.uniform(-1, 1)
+
+        hat.append(0.1 * (noise - last) * math.exp(-t * 80))
+
+        last = noise
+
+    # ---- lay it all out: 4 chords x 2 passes = 16 bars
+    total = int(rate * bar * 16)
+
+    mix = [0.0] * total
+
+    def put(samples, at):
+
+        start = int(at * rate)
+
+        if start < 0:
+            return
+
+        end = min(total, start + len(samples))
+
+        for i in range(start, end):
+            mix[i] += samples[i - start]
+
+    for index in range(8):
+
+        bass, notes, melody = progression[index % 4]
+
+        base = index * bar * 2
+
+        put(chord_waves[index % 4], base)
+
+        for bar_no in range(2):
+
+            top = base + bar_no * bar
+
+            put(bass_wave(bass, 1.6), top)
+            put(bass_wave(bass + (7 if bar_no else 0), 1.0),
+                top + beat * 2.5)
+
+            put(kick, top + rng.uniform(0, 0.006))
+            put(kick, top + beat * 2.5 + rng.uniform(0, 0.008))
+
+            put(snare, top + beat * 1 + rng.uniform(0, 0.01))
+            put(snare, top + beat * 3 + rng.uniform(0, 0.01))
+
+            for step in range(8):
+
+                swing = 0.09 * beat if step % 2 else 0.0
+
+                put(
+                    hat,
+                    top + step * beat / 2 + swing
+                    + rng.uniform(0, 0.006)
+                )
+
+            for step in range(8):
+
+                if rng.random() < 0.32:
+
+                    put(
+                        pluck_wave(rng.choice(melody)),
+                        top + step * beat / 2 + rng.uniform(0, 0.012)
+                    )
+
+    # ---- warm it up: roll off the highs, add a little vinyl crackle
+    peak = max(abs(v) for v in mix) or 1.0
+
+    scale = 0.62 / peak
+
+    out = []
+
+    y = 0.0
+
+    for i in range(total):
+
+        y += 0.62 * (mix[i] * scale - y)
+
+        v = y + rng.uniform(-1, 1) * 0.003
+
+        out.append(v)
+
+    pops = int(total / rate * 5)
+
+    for _ in range(pops):
+
+        at = rng.randrange(total - 3)
+
+        size = rng.uniform(0.015, 0.06) * rng.choice((-1, 1))
+
+        out[at] += size
+        out[at + 1] -= size * 0.5
+
+    fade = int(rate * 0.01)
+
+    for i in range(fade):
+
+        k = i / fade
+
+        out[i] *= k
+        out[total - 1 - i] *= k
+
+    data = array.array(
+        "h",
+        [max(-32767, min(32767, int(v * 32767))) for v in out]
+    )
+
+    temp = path.with_suffix(".tmp")
+
+    with wave.open(str(temp), "wb") as handle:
+
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(data.tobytes())
+
+    temp.replace(path)
+
+    return path
+
 
 
 def version_tuple(text):
@@ -1374,6 +1653,255 @@ def foreground_window_title():
 
     except Exception:
         return ""
+
+
+def office_file_text(path):
+    """Plain text from a .docx, .pptx or .xlsx (these are zip files
+    of XML). Spreadsheets give their text cells only."""
+
+    import zipfile
+    import html as html_lib
+
+    ext = Path(path).suffix.lower()
+
+    def strip(xml):
+        return html_lib.unescape(re.sub(r"<[^>]+>", "", xml))
+
+    with zipfile.ZipFile(path) as z:
+
+        names = z.namelist()
+
+        if ext == ".docx":
+
+            xml = z.read("word/document.xml").decode("utf-8", "replace")
+
+            return strip(re.sub(r"</w:p>", "\n", xml))
+
+        if ext == ".pptx":
+
+            slides = sorted(
+                (
+                    n for n in names
+                    if re.match(r"ppt/slides/slide\d+\.xml$", n)
+                ),
+                key=lambda n: int(re.findall(r"\d+", n)[-1])
+            )
+
+            out = []
+
+            for number, name in enumerate(slides, 1):
+
+                xml = z.read(name).decode("utf-8", "replace")
+
+                out.append(
+                    f"--- Slide {number} ---\n"
+                    + strip(re.sub(r"</a:p>", "\n", xml))
+                )
+
+            return "\n".join(out)
+
+        xml = z.read("xl/sharedStrings.xml").decode("utf-8", "replace")
+
+        return "\n".join(
+            html_lib.unescape(t)
+            for t in re.findall(r"<t[^>]*>(.*?)</t>", xml, re.S)
+        )
+
+
+BROWSER_EXES = (
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
+    "opera.exe", "vivaldi.exe"
+)
+
+
+def _user32():
+
+    import ctypes
+    from ctypes import wintypes
+
+    u = ctypes.windll.user32
+
+    u.GetForegroundWindow.restype = wintypes.HWND
+    u.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    u.GetWindowTextW.argtypes = [
+        wintypes.HWND, wintypes.LPWSTR, ctypes.c_int
+    ]
+    u.IsWindow.argtypes = [wintypes.HWND]
+    u.IsIconic.argtypes = [wintypes.HWND]
+    u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    u.SetForegroundWindow.argtypes = [wintypes.HWND]
+    u.PostMessageW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+    ]
+    u.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+    ]
+
+    return u
+
+
+def foreground_window_handle():
+    """The window in front (an int), or 0."""
+
+    if sys.platform != "win32":
+        return 0
+
+    try:
+        return int(_user32().GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def window_title(hwnd):
+    """Title of one particular window ('' if it is gone)."""
+
+    if sys.platform != "win32" or not hwnd:
+        return ""
+
+    try:
+
+        import ctypes
+
+        u = _user32()
+
+        length = u.GetWindowTextLengthW(hwnd)
+
+        if length <= 0:
+            return ""
+
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        u.GetWindowTextW(hwnd, buffer, length + 1)
+
+        return buffer.value
+
+    except Exception:
+        return ""
+
+
+def window_exists(hwnd):
+
+    if sys.platform != "win32" or not hwnd:
+        return False
+
+    try:
+        return bool(_user32().IsWindow(hwnd))
+    except Exception:
+        return False
+
+
+def window_process_name(hwnd):
+    """File name of the program that owns a window, e.g. chrome.exe."""
+
+    if sys.platform != "win32" or not hwnd:
+        return ""
+
+    try:
+
+        import ctypes
+        from ctypes import wintypes
+
+        u = _user32()
+        k = ctypes.windll.kernel32
+
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = [
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+        ]
+        k.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD)
+        ]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        pid = wintypes.DWORD(0)
+
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+
+        handle = k.OpenProcess(0x1000, False, pid.value)
+
+        if not handle:
+            return ""
+
+        try:
+
+            buffer = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+
+            if k.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(size)
+            ):
+                return os.path.basename(buffer.value).lower()
+
+        finally:
+            k.CloseHandle(handle)
+
+    except Exception:
+        pass
+
+    return ""
+
+
+def bring_window_to_front(hwnd):
+
+    try:
+
+        u = _user32()
+
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, 9)
+
+        u.SetForegroundWindow(hwnd)
+
+    except Exception:
+        pass
+
+
+def press_ctrl_w():
+    """Ctrl+W goes to whichever window is in front."""
+
+    try:
+
+        import ctypes
+
+        u = ctypes.windll.user32
+
+        u.keybd_event(0x11, 0, 0, 0)
+        u.keybd_event(0x57, 0, 0, 0)
+        u.keybd_event(0x57, 0, 2, 0)
+        u.keybd_event(0x11, 0, 2, 0)
+
+    except Exception:
+        pass
+
+
+def close_window_politely(hwnd):
+    """Same as the window's own close button (WM_CLOSE)."""
+
+    try:
+        _user32().PostMessageW(hwnd, 0x0010, 0, 0)
+    except Exception:
+        pass
+
+
+def screen_rect():
+    """x, y, width, height covering every monitor."""
+
+    try:
+
+        import ctypes
+
+        u = ctypes.windll.user32
+
+        x, y = u.GetSystemMetrics(76), u.GetSystemMetrics(77)
+        w, h = u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+
+        if w > 0 and h > 0:
+            return x, y, w, h
+
+    except Exception:
+        pass
+
+    return None
 
 
 # ============================================================
@@ -2606,6 +3134,15 @@ class RoundedButton:
         self.hovered = False
         self.selected = selected
 
+        # circle > 0 makes a round button of that size; plus draws a
+        # "+" mark instead of text.
+        self.circle = 0
+        self.plus = False
+
+        # wrap > 0: a fixed-width button whose text wraps onto as many
+        # lines as it needs (used for long quiz answers).
+        self.wrap = 0
+
         self.font = tkfont.Font(family="Segoe UI", size=10)
 
         try:
@@ -2629,7 +3166,13 @@ class RoundedButton:
 
     def _text_width(self):
 
+        if self.circle:
+            return self.circle
+
         padding = 26
+
+        if self.wrap:
+            return self.wrap + padding
 
         width = self.font.measure(self.text) + padding
 
@@ -2647,9 +3190,26 @@ class RoundedButton:
     def _redraw(self):
 
         w = self._text_width()
-        h = self.HEIGHT
+        h = self.circle or self.HEIGHT
 
         self.canvas.delete("all")
+
+        if self.wrap and not self.circle:
+
+            probe = self.canvas.create_text(
+                0, 0,
+                text=self.text,
+                font=self.font,
+                width=self.wrap,
+                anchor="nw"
+            )
+
+            box = self.canvas.bbox(probe)
+
+            self.canvas.delete(probe)
+
+            if box:
+                h = max(h, box[3] - box[1] + 18)
 
         self.canvas.configure(
             width=w,
@@ -2664,10 +3224,23 @@ class RoundedButton:
             bg_color, fg_color = PANEL_2, TEXT
 
         self.app._draw_bubble_background(
-            self.canvas, w, h, h // 2, bg_color
+            self.canvas, w, h, min(h // 2, 18), bg_color
         )
 
-        if getattr(self, "icon", None) is not None:
+        if self.plus:
+
+            arm = h * 0.2
+
+            for x1, y1, x2, y2 in (
+                (w / 2 - arm, h / 2, w / 2 + arm, h / 2),
+                (w / 2, h / 2 - arm, w / 2, h / 2 + arm)
+            ):
+                self.canvas.create_line(
+                    x1, y1, x2, y2,
+                    fill=fg_color, width=2, capstyle="round"
+                )
+
+        elif getattr(self, "icon", None) is not None:
 
             self.canvas.create_image(w / 2, h / 2, image=self.icon)
 
@@ -2677,7 +3250,11 @@ class RoundedButton:
                 w / 2, h / 2,
                 text=self.text,
                 font=self.font,
-                fill=fg_color
+                fill=fg_color,
+                **(
+                    {"width": self.wrap, "justify": "center"}
+                    if self.wrap else {}
+                )
             )
 
     def _on_enter(self, event=None):
@@ -2899,6 +3476,14 @@ class StudesticsApp(tk.Tk):
 
         # Floating timer
         self.float_on = True
+
+        self.music_on = True
+        self._music_stop_ev = None
+        self._music_serial = 0
+        self._music_failed = False
+        self._fullscreen = False
+        self._zen = None
+        self._corner = None
         self.float_style = "ring"
         self.float_pos = None
         self._float_win = None
@@ -2915,6 +3500,7 @@ class StudesticsApp(tk.Tk):
         self.float_preview_canvas = None
         self.focus_nudges = 0           # nudges during the current session
         self.nudge_on = True
+        self.nudge_strict = False
         self.nudge_words = parse_words(DEFAULT_NUDGE_WORDS)
         self._nudge_last_poll = 0.0
         self._nudge_cooldown_until = 0.0
@@ -3124,6 +3710,12 @@ class StudesticsApp(tk.Tk):
 
         self.start_reminders()
 
+        self.bind("<F11>", self.toggle_fullscreen)
+        self.bind_all("<KeyPress>", self._zen_keys, add="+")
+        self.bind("<Escape>", self._leave_fullscreen, add="+")
+
+        self._music_watch()
+
         profile = self.db.get_profile()
 
         # Clean up after a self-update, then look for a newer release.
@@ -3244,6 +3836,14 @@ class StudesticsApp(tk.Tk):
 
         self.nudge_on = (
             self.db.get_setting("nudge_enabled", "1") == "1"
+        )
+
+        self.nudge_strict = (
+            self.db.get_setting("nudge_strict", "0") == "1"
+        )
+
+        self.music_on = (
+            self.db.get_setting("focus_music", "1") == "1"
         )
 
         self.nudge_words = parse_words(
@@ -5432,6 +6032,8 @@ class StudesticsApp(tk.Tk):
             PURPLE_HOVER
         )
 
+        self._dashboard_target_card()
+
         columns = tk.Frame(
             self.page,
             bg=BG
@@ -5791,6 +6393,124 @@ class StudesticsApp(tk.Tk):
         self._panel_layouts.append(layout)
 
         return outer, inner
+
+    def _dashboard_target_card(self):
+        """Today's focus minutes against a daily target, and the
+        study streak. The target changes in steps of 15 minutes."""
+
+        try:
+            stats = self.db.focus_stats()
+        except Exception:
+            return
+
+        try:
+            target = int(self.db.get_setting("daily_target_min", "60"))
+        except ValueError:
+            target = 60
+
+        state = {"target": max(15, min(600, target))}
+
+        today_min = int(stats["today"] // 60)
+
+        streak = stats["streak"]
+
+        outer, body = self.rounded_panel(
+            self.page,
+            radius=14,
+            accent=PURPLE_HOVER,
+            fit=True
+        )
+
+        outer.pack(fill="x", pady=(0, 24))
+
+        top = tk.Frame(body, bg=PANEL)
+
+        top.pack(fill="x", padx=18, pady=(14, 0))
+
+        tk.Label(
+            top, text="Daily focus target", bg=PANEL, fg=MUTED,
+            font=("Segoe UI", 9)
+        ).pack(side="left")
+
+        tk.Label(
+            top,
+            text=f"{streak} day streak",
+            bg=PANEL,
+            fg=YELLOW if streak else MUTED_2,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side="right")
+
+        mid = tk.Frame(body, bg=PANEL)
+
+        mid.pack(fill="x", padx=18, pady=(2, 0))
+
+        value = tk.Label(
+            mid, bg=PANEL, font=("Segoe UI", 20, "bold")
+        )
+
+        value.pack(side="left")
+
+        bar = tk.Canvas(
+            body, height=10, bg=PANEL, highlightthickness=0, bd=0
+        )
+
+        bar.pack(fill="x", padx=18, pady=(8, 16))
+
+        track = _theme_mix(PANEL_2, TEXT, 0.12)
+
+        def paint(event=None):
+
+            goal = state["target"]
+
+            reached = today_min >= goal
+
+            value.configure(
+                text=f"{today_min} / {goal} min",
+                fg=GREEN if reached else PURPLE_HOVER
+            )
+
+            bar.delete("all")
+
+            width = max(bar.winfo_width(), 24)
+
+            bar.create_line(
+                5, 5, width - 5, 5, width=10, capstyle="round",
+                fill=track
+            )
+
+            fraction = min(1.0, today_min / goal)
+
+            if fraction > 0:
+
+                bar.create_line(
+                    5, 5, max(5.5, 5 + (width - 10) * fraction), 5,
+                    width=10, capstyle="round",
+                    fill=GREEN if reached else PURPLE_HOVER
+                )
+
+        def change(step):
+
+            state["target"] = max(15, min(600, state["target"] + step))
+
+            self.db.set_setting(
+                "daily_target_min", str(state["target"])
+            )
+
+            paint()
+
+        plus = self.make_button(
+            mid, "+15", lambda: change(15), width=4
+        )
+
+        plus.pack(side="right")
+
+        self.make_button(
+            mid, "-15", lambda: change(-15), width=4
+        ).pack(side="right", padx=(0, 8))
+
+        bar.bind("<Configure>", paint)
+
+        paint()
 
     def stat_card(
         self,
@@ -9078,7 +9798,13 @@ class StudesticsApp(tk.Tk):
             "other text, like: "
             '[{"q": "...", "options": ["a", "b", "c", "d"], '
             '"answer": 0, "why": "one short sentence"}] '
-            "where answer is the index (0-3) of the correct option.\n\n"
+            "where answer is the index (0-3) of the correct option. "
+            "Important: the four options must be about the same length "
+            "and level of detail, so the correct one can't be spotted "
+            "by being longer or more specific. The wrong options must "
+            "be believable and as carefully worded as the right one. "
+            "Keep each option under 100 characters. Spread the correct "
+            "answer across all four positions.\n\n"
             "NOTES:\n" + text[:12000]
         )
 
@@ -9121,6 +9847,14 @@ class StudesticsApp(tk.Tk):
                     answer = int(item["answer"])
 
                     if len(options) == 4 and 0 <= answer < 4:
+
+                        # Mix the order ourselves, since the AI likes
+                        # putting the answer first.
+                        right = options[answer]
+
+                        random.shuffle(options)
+
+                        answer = options.index(right)
 
                         quiz.append({
                             "q": str(item["q"]),
@@ -9540,10 +10274,13 @@ class StudesticsApp(tk.Tk):
 
                 button = self.make_button(
                     body,
-                    option if len(option) < 76 else option[:73] + "…",
+                    option,
                     lambda n=number: choose(n),
                     width=57
                 )
+
+                button.wrap = 510
+                button._redraw()
 
                 button.pack(anchor="w", pady=5)
 
@@ -9648,7 +10385,7 @@ class StudesticsApp(tk.Tk):
         header = self.page_header(
             "Notes",
             "A simple text editor. Write here, or open and edit .txt "
-            "files. New: press Quiz me for a quiz on your notes, or "
+            "files. Press Quiz me for a quiz on your notes, or "
             "type /notes in AI Chat to have the AI write them."
         )
 
@@ -9967,25 +10704,7 @@ class StudesticsApp(tk.Tk):
 
         quiz_button.configure(selected=True)
 
-        quiz_button.place(relx=1.0, rely=0.5, anchor="e")
-
-        # A small "NEW" tag on the button's corner.
-        new_tag = tk.Label(
-            header,
-            text="NEW",
-            bg=GREEN,
-            fg=BG,
-            font=("Segoe UI", 7, "bold"),
-            padx=5,
-            pady=1
-        )
-
-        new_tag.place(
-            in_=quiz_button.canvas,
-            relx=1.0,
-            rely=0.0,
-            anchor="center"
-        )
+        quiz_button.place(relx=1.0, x=0, rely=0.5, anchor="e")
 
         state_label = tk.Label(
             bar,
@@ -10327,6 +11046,7 @@ class StudesticsApp(tk.Tk):
 
         self._build_focus_drawer(panel)
         self._build_float_toggle(panel)
+        self._build_focus_corner(panel)
 
         self._refresh_focus_presets()
         self.update_focus_ui()
@@ -11026,6 +11746,9 @@ class StudesticsApp(tk.Tk):
 
         finished = self.focus_phase
 
+        # The round-over popup must not end up behind the cover.
+        self._leave_fullscreen()
+
         if finished == "focus":
             self._log_focus(True, self.focus_duration)
 
@@ -11613,18 +12336,20 @@ class StudesticsApp(tk.Tk):
                 side="right"
             )
 
-            tk.Label(
-                box,
-                text=explain,
-                bg=SIDEBAR,
-                fg=MUTED,
-                font=("Segoe UI", 9),
-                wraplength=width - left - 28,
-                justify="left"
-            ).pack(
-                anchor="w",
-                pady=(6, 0)
-            )
+            if explain:
+
+                tk.Label(
+                    box,
+                    text=explain,
+                    bg=SIDEBAR,
+                    fg=MUTED,
+                    font=("Segoe UI", 9),
+                    wraplength=width - left - 28,
+                    justify="left"
+                ).pack(
+                    anchor="w",
+                    pady=(6, 0)
+                )
 
         def pomodoro_control(parent):
 
@@ -11675,6 +12400,17 @@ class StudesticsApp(tk.Tk):
         )
 
         option(
+            "Full-screen overlay",
+            "",
+            lambda parent: self.make_switch(
+                parent,
+                on=self.nudge_strict,
+                command=self.set_nudge_strict,
+                bg=SIDEBAR
+            )
+        )
+
+        option(
             "Distraction words",
             "The words that count as a distraction. Studestics "
             "looks for them in the title of the window you are "
@@ -11709,11 +12445,14 @@ class StudesticsApp(tk.Tk):
             bg=SIDEBAR
         )
 
+        # Packed ahead of everything else so that on a short window it
+        # is the options above that give way, not this list.
         words_box.pack(
             side="bottom",
             fill="x",
             padx=(left, 22),
-            pady=(0, 24)
+            pady=(0, 24),
+            before=drawer.pack_slaves()[0]
         )
 
         self._drawer["words_box"] = words_box
@@ -12271,6 +13010,715 @@ class StudesticsApp(tk.Tk):
 
         self._paint_float_icon()
 
+    # --------------------------------------------------------
+    # Lofi music and full screen (bottom right of the Focus page)
+    # --------------------------------------------------------
+
+    def _corner_icon_image(self, kind, size, color, on):
+
+        scale = 8
+
+        big = size * scale
+
+        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+
+        d = ImageDraw.Draw(img)
+
+        u = big / 26.0
+
+        def line(points, width):
+
+            d.line(
+                [(x * u, y * u) for x, y in points],
+                fill=color,
+                width=int(round(width * u)),
+                joint="curve"
+            )
+
+            r = width * u / 2
+
+            for x, y in (points[0], points[-1]):
+
+                d.ellipse(
+                    [x * u - r, y * u - r, x * u + r, y * u + r],
+                    fill=color
+                )
+
+        if kind == "music":
+
+            d.ellipse([3 * u, 16 * u, 10.5 * u, 22 * u], fill=color)
+            d.ellipse([14 * u, 14 * u, 21.5 * u, 20 * u], fill=color)
+
+            d.rectangle(
+                [9 * u, 6 * u, 10.8 * u, 19 * u],
+                fill=color
+            )
+
+            d.rectangle(
+                [20 * u, 4 * u, 21.8 * u, 17 * u],
+                fill=color
+            )
+
+            d.polygon(
+                [
+                    (9 * u, 6 * u), (21.8 * u, 3.6 * u),
+                    (21.8 * u, 7.4 * u), (9 * u, 9.8 * u)
+                ],
+                fill=color
+            )
+
+            if not on:
+
+                d.line(
+                    [(3.5 * u, 23 * u), (22.5 * u, 2.5 * u)],
+                    fill=(0, 0, 0, 0),
+                    width=int(round(5.2 * u))
+                )
+
+                d.line(
+                    [(3.5 * u, 23 * u), (22.5 * u, 2.5 * u)],
+                    fill=color,
+                    width=int(round(2 * u))
+                )
+
+        elif not on:
+
+            # Corners pointing out: "make it bigger".
+            line([(4, 10), (4, 4), (10, 4)], 2.2)
+            line([(16, 4), (22, 4), (22, 10)], 2.2)
+            line([(22, 16), (22, 22), (16, 22)], 2.2)
+            line([(10, 22), (4, 22), (4, 16)], 2.2)
+
+        else:
+
+            # Corners pointing in: "back to normal".
+            line([(4, 9), (9, 9), (9, 4)], 2.2)
+            line([(17, 4), (17, 9), (22, 9)], 2.2)
+            line([(22, 17), (17, 17), (17, 22)], 2.2)
+            line([(9, 22), (9, 17), (4, 17)], 2.2)
+
+        return img.resize((size, size), Image.LANCZOS)
+
+    def _build_focus_corner(self, panel):
+
+        corner = {"hover": None, "icons": {}}
+
+        self._corner = corner
+
+        corner["tip"] = tk.Label(
+            panel,
+            text="",
+            bg=SIDEBAR,
+            fg=TEXT,
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=5,
+            highlightthickness=1,
+            highlightbackground=BORDER
+        )
+
+        def make(kind, offset, command):
+
+            icon = tk.Canvas(
+                panel,
+                width=38,
+                height=38,
+                bg=PANEL,
+                highlightthickness=0,
+                bd=0,
+                cursor="hand2"
+            )
+
+            icon.place(
+                relx=1.0,
+                rely=1.0,
+                x=offset,
+                y=-14,
+                anchor="se"
+            )
+
+            def hover(on):
+
+                corner["hover"] = kind if on else None
+
+                self._paint_corner()
+
+                self._corner_tip(on)
+
+            def click(event=None):
+
+                command()
+
+                self._corner_tip(True)
+
+            icon.bind("<Enter>", lambda e: hover(True))
+            icon.bind("<Leave>", lambda e: hover(False))
+            icon.bind("<Button-1>", click)
+
+            corner["icons"][kind] = icon
+
+        make("full", -14, self.toggle_fullscreen)
+        make("music", -58, self.toggle_music)
+
+        self._paint_corner()
+
+    def _paint_corner(self):
+
+        corner = self._corner
+
+        if not corner:
+            return
+
+        for kind, icon in corner["icons"].items():
+
+            on = self.music_on if kind == "music" else self._fullscreen
+
+            hovered = corner["hover"] == kind
+
+            if kind == "music" and self.music_on:
+                color = PURPLE_LIGHT if hovered else PURPLE_HOVER
+            else:
+                color = TEXT if hovered else MUTED
+
+            try:
+
+                icon.delete("all")
+
+                if HAS_PIL:
+
+                    photo = ImageTk.PhotoImage(
+                        self._corner_icon_image(kind, 26, color, on)
+                    )
+
+                    icon.icon_photo = photo
+
+                    icon.create_image(19, 19, image=photo)
+
+                else:
+
+                    icon.create_text(
+                        19, 19,
+                        text="♪" if kind == "music" else "⛶",
+                        fill=color,
+                        font=("Segoe UI", 16)
+                    )
+
+            except Exception:
+                pass
+
+    def _corner_tip(self, on):
+
+        corner = self._corner
+
+        if not corner:
+            return
+
+        tip = corner["tip"]
+
+        try:
+
+            kind = corner["hover"]
+
+            if not on or kind is None:
+
+                tip.place_forget()
+
+                return
+
+            if kind == "music":
+
+                text = (
+                    "Lofi music: On  (click to turn off)"
+                    if self.music_on
+                    else "Lofi music: Off  (click to turn on)"
+                )
+
+            else:
+
+                text = "Timer only, full screen  (F or F11)"
+
+            tip.configure(text=text)
+
+            tip.place(
+                relx=1.0,
+                rely=1.0,
+                x=-14,
+                y=-60,
+                anchor="se"
+            )
+
+            tk.Misc.tkraise(tip)
+
+        except Exception:
+            pass
+
+    def toggle_fullscreen(self, event=None):
+        """Distraction-free view: a full-screen cover with only the
+        timer in the middle."""
+
+        if self._fullscreen:
+            self._leave_fullscreen()
+        else:
+            self._enter_fullscreen()
+
+        return "break"
+
+    def _monitor_rect(self):
+        """x, y, width, height of the screen the app is on."""
+
+        try:
+
+            import ctypes
+            from ctypes import wintypes
+
+            class MONITORINFO(ctypes.Structure):
+
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD)
+                ]
+
+            user32 = ctypes.windll.user32
+
+            user32.MonitorFromWindow.restype = wintypes.HANDLE
+            user32.MonitorFromWindow.argtypes = [
+                wintypes.HWND, wintypes.DWORD
+            ]
+
+            hwnd = user32.GetParent(self.winfo_id()) or self.winfo_id()
+
+            monitor = user32.MonitorFromWindow(hwnd, 2)
+
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+
+            if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+
+                r = info.rcMonitor
+
+                return r.left, r.top, r.right - r.left, r.bottom - r.top
+
+        except Exception:
+            pass
+
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
+    def _enter_fullscreen(self):
+
+        if self._fullscreen:
+            return
+
+        x, y, sw, sh = self._monitor_rect()
+
+        win = tk.Toplevel(self)
+
+        win.withdraw()
+        win.overrideredirect(True)
+        win.configure(bg=BG)
+        win.geometry(f"{sw}x{sh}+{x}+{y}")
+
+        # Owned by the main window, so Windows counts both as one
+        # program in Alt+Tab (one press moves to the next program).
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+
+        # Not "always on top", so Alt+Tab and the taskbar can bring
+        # another window in front of it.
+        canvas = tk.Canvas(
+            win,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+            cursor="arrow"
+        )
+
+        canvas.pack(fill="both", expand=True)
+
+        ring_zoom = 0.46 * sh / FLOAT_SIZES["ring"][1]
+
+        diameter = float_layout("ring", ring_zoom)["size"][1]
+
+        zen = {
+            "win": win,
+            "canvas": canvas,
+            "key": None,
+            "job": None,
+            "photo": None
+        }
+
+        self._zen = zen
+
+        self._fullscreen = True
+
+        cx, cy = sw / 2, sh / 2
+
+        time_id = canvas.create_text(
+            cx, cy - diameter * 0.03,
+            text="",
+            fill=TEXT,
+            font=("Segoe UI", -int(diameter * 0.2), "bold")
+        )
+
+        status_id = canvas.create_text(
+            cx, cy + diameter * 0.17,
+            text="",
+            fill=MUTED,
+            font=("Segoe UI", -int(diameter * 0.058))
+        )
+
+        hint_id = canvas.create_text(
+            cx, sh - 40,
+            text="Space to pause or resume   |   F or Esc to leave",
+            fill=MUTED_2,
+            font=("Segoe UI", -14)
+        )
+
+        def paint():
+
+            zen["job"] = None
+
+            if not self._fullscreen or self._zen is not zen:
+                return
+
+            if self.focus_finished:
+                fraction, color, status = 1.0, GREEN, "Complete"
+            else:
+
+                fraction = (
+                    self.focus_seconds / max(1, self._phase_total())
+                )
+
+                if self.focus_phase != "focus":
+                    color, status = BLUE, "Break"
+                elif self.focus_running:
+                    color, status = PURPLE_HOVER, "Focusing"
+                else:
+                    color, status = PURPLE_HOVER, "Paused"
+
+            key = (round(fraction, 3), color)
+
+            if key != zen["key"]:
+
+                zen["key"] = key
+
+                canvas.delete("ring")
+
+                if HAS_PIL:
+
+                    img, _ = render_float(
+                        "ring",
+                        fraction,
+                        color,
+                        BG,
+                        zoom=ring_zoom,
+                        card=False
+                    )
+
+                    zen["photo"] = ImageTk.PhotoImage(img)
+
+                    canvas.create_image(
+                        cx, cy,
+                        image=zen["photo"],
+                        tags="ring"
+                    )
+
+                else:
+
+                    r = diameter / 2 - 14
+
+                    canvas.create_oval(
+                        cx - r, cy - r, cx + r, cy + r,
+                        outline=BORDER, width=12, tags="ring"
+                    )
+
+                    if fraction > 0:
+
+                        canvas.create_arc(
+                            cx - r, cy - r, cx + r, cy + r,
+                            start=90,
+                            extent=-min(359.9, 360 * fraction),
+                            style="arc",
+                            outline=color,
+                            width=12,
+                            tags="ring"
+                        )
+
+                canvas.tag_lower("ring")
+
+            # An overlay window doesn't always get the keyboard from
+            # Windows; take it back if it is somewhere else.
+            try:
+
+                holder = self.focus_get()
+
+                # Only when the focus is in this app's main window. If
+                # another app has it (you Alt+Tabbed), leave it alone.
+                if holder is not None and holder.winfo_toplevel() is self:
+
+                    win.lift()
+                    win.focus_force()
+                    canvas.focus_set()
+
+            except Exception:
+                pass
+
+            canvas.itemconfigure(time_id, text=self.focus_time_text())
+            canvas.itemconfigure(status_id, text=status)
+
+            zen["job"] = win.after(250, paint)
+
+        def hide_hint():
+
+            try:
+
+                canvas.delete(hint_id)
+
+                canvas.configure(cursor="none")
+
+            except Exception:
+                pass
+
+        for sequence in ("<Escape>", "<F11>", "<Double-Button-1>"):
+            win.bind(sequence, lambda e: self._leave_fullscreen())
+
+        # Click anywhere to make sure the keys reach this window.
+        canvas.bind("<Button-1>", lambda e: canvas.focus_set())
+
+        paint()
+
+        win.deiconify()
+
+        try:
+
+            win.lift()
+            win.focus_force()
+            canvas.focus_set()
+
+        except Exception:
+            pass
+
+        win.after(3500, hide_hint)
+
+        self._paint_corner()
+
+    def _zen_keys(self, event):
+        """Space pauses or resumes and F goes in or out of the
+        timer-only view."""
+
+        try:
+
+            if event.state & (0x4 | 0x20000):
+                return
+
+            key = event.keysym
+
+            if self._fullscreen:
+
+                if key == "space":
+
+                    self.toggle_focus()
+
+                    return "break"
+
+                if key in ("f", "F"):
+
+                    self._leave_fullscreen()
+
+                    return "break"
+
+                if key == "Escape":
+
+                    self._leave_fullscreen()
+
+                return
+
+            if (
+                key in ("f", "F", "space")
+                and self.current_page == "Focus Mode"
+                and event.widget.winfo_toplevel() is self
+            ):
+
+                kind = event.widget.winfo_class()
+
+                if kind in (
+                    "Entry", "Text", "TEntry", "TCombobox", "Spinbox"
+                ):
+                    return
+
+                if key == "space":
+                    self.toggle_focus()
+                else:
+                    self._enter_fullscreen()
+
+                return "break"
+
+        except Exception:
+            pass
+
+    def _leave_fullscreen(self, event=None):
+
+        zen = getattr(self, "_zen", None)
+
+        self._fullscreen = False
+        self._zen = None
+
+        if zen:
+
+            try:
+
+                if zen["job"]:
+                    zen["win"].after_cancel(zen["job"])
+
+            except Exception:
+                pass
+
+            try:
+                zen["win"].destroy()
+            except Exception:
+                pass
+
+        self._paint_corner()
+
+    def toggle_music(self):
+
+        self.music_on = not self.music_on
+
+        self.db.set_setting(
+            "focus_music",
+            "1" if self.music_on else "0"
+        )
+
+        self._paint_corner()
+
+        # The watcher below starts or stops it within a moment.
+
+    def _music_playing(self):
+
+        ev = self._music_stop_ev
+
+        return ev is not None and not ev.is_set()
+
+    def _music_watch(self):
+        """Lofi plays while a focus round is running, and stops when
+        you pause, reset, take a break or the round ends."""
+
+        try:
+
+            if not getattr(self, "_quitting", False):
+
+                want = (
+                    self.music_on
+                    and self.focus_running
+                    and self.focus_phase == "focus"
+                )
+
+                playing = self._music_playing()
+
+                if want and not playing and not self._music_failed:
+                    self._music_start()
+
+                elif not want and playing:
+                    self._music_stop()
+
+        except Exception:
+            pass
+
+        if not getattr(self, "_quitting", False):
+            self.after(500, self._music_watch)
+
+    def _music_start(self):
+
+        if sys.platform != "win32" or self._music_playing():
+            return
+
+        stop = threading.Event()
+
+        self._music_stop_ev = stop
+
+        self._music_serial += 1
+
+        alias = f"studlofi{self._music_serial}"
+
+        def run():
+
+            opened = False
+
+            try:
+
+                path = lofi_path()
+
+                if stop.is_set():
+                    return
+
+                error, _ = mci_send(
+                    f'open "{path}" type waveaudio alias {alias}'
+                )
+
+                if error:
+
+                    self._music_failed = True
+
+                    return
+
+                opened = True
+
+                mci_send(f"setaudio {alias} volume to 450")
+
+                error, _ = mci_send(f"play {alias}")
+
+                if error:
+
+                    self._music_failed = True
+
+                    return
+
+                while not stop.is_set():
+
+                    stop.wait(0.1)
+
+                    error, mode = mci_send(f"status {alias} mode")
+
+                    if error:
+                        break
+
+                    if mode == "stopped":
+
+                        mci_send(f"seek {alias} to start")
+                        mci_send(f"play {alias}")
+
+            except Exception:
+
+                self._music_failed = True
+
+            finally:
+
+                if opened:
+
+                    try:
+
+                        mci_send(f"stop {alias}")
+                        mci_send(f"close {alias}")
+
+                    except Exception:
+                        pass
+
+                stop.set()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _music_stop(self):
+
+        ev = self._music_stop_ev
+
+        self._music_stop_ev = None
+
+        if ev is not None:
+            ev.set()
+
     def choose_float_style(self, name):
 
         if name not in FLOAT_SIZES:
@@ -12817,6 +14265,18 @@ class StudesticsApp(tk.Tk):
 
             if word and word in title:
 
+                hwnd = foreground_window_handle()
+
+                if self.nudge_strict and hwnd:
+
+                    self._nudge_cooldown_until = now + 3
+
+                    self.focus_nudges += 1
+
+                    self.show_strict_overlay(word, hwnd)
+
+                    return
+
                 self._nudge_cooldown_until = (
                     now + NUDGE_COOLDOWN_SECONDS
                 )
@@ -12941,6 +14401,218 @@ class StudesticsApp(tk.Tk):
                 pass
 
         win.after(20000, auto_close)
+
+    def set_nudge_strict(self, value):
+
+        self.nudge_strict = bool(value)
+
+        self.db.set_setting(
+            "nudge_strict",
+            "1" if self.nudge_strict else "0"
+        )
+
+    def show_strict_overlay(self, word, hwnd):
+        """A full-screen block that stays until the distracting
+        window or tab is closed, the timer ends, or focus is turned
+        off. Alt+F4 and Esc do nothing to it."""
+
+        task = self._focus_task()
+
+        exe = window_process_name(hwnd)
+        is_browser = exe in BROWSER_EXES
+
+        win = tk.Toplevel(self)
+        self._nudge_popup = win
+
+        win.configure(bg=BG)
+        win.overrideredirect(True)
+
+        rect = screen_rect() or (
+            0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+        )
+
+        win.geometry("%dx%d+%d+%d" % (rect[2], rect[3], rect[0], rect[1]))
+        win.attributes("-topmost", True)
+
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        for sequence in ("<Alt-F4>", "<Escape>", "<Alt-Key>"):
+            win.bind(sequence, lambda e: "break")
+
+        self._nudge_beep()
+
+        box = tk.Frame(win, bg=BG)
+
+        box.place(relx=0.5, rely=0.5, anchor="center")
+
+        tk.Label(
+            box, text="Back to it", bg=BG, fg=TEXT,
+            font=("Segoe UI", 36, "bold")
+        ).pack()
+
+        tk.Label(
+            box,
+            text=(
+                f"That looks like {word.title()}, and your focus "
+                "timer is still running."
+            ),
+            bg=BG, fg=MUTED, font=("Segoe UI", 14),
+            wraplength=720, justify="center"
+        ).pack(pady=(10, 0))
+
+        clock = tk.Label(
+            box, text=self.focus_time_text(), bg=BG, fg=PURPLE,
+            font=("Segoe UI", 48, "bold")
+        )
+
+        clock.pack(pady=(24, 0))
+
+        if task is not None:
+
+            label = task["title"]
+
+            if len(label) > 60:
+                label = label[:59] + "…"
+
+            tk.Label(
+                box, text=f'Still on: "{label}"', bg=BG, fg=TEXT,
+                font=("Segoe UI", 13)
+            ).pack(pady=(4, 0))
+
+        shown = window_title(hwnd)
+
+        if len(shown) > 70:
+            shown = shown[:69] + "…"
+
+        tk.Label(
+            box, text=shown, bg=BG, fg=MUTED_2,
+            font=("Segoe UI", 10)
+        ).pack(pady=(26, 8))
+
+        state = {"attempts": 0, "grace_until": 0.0}
+
+        def button_text():
+
+            if is_browser and state["attempts"] == 0:
+                return "Close this tab"
+
+            if is_browser:
+                return "Close the whole window"
+
+            return "Close this app"
+
+        def finish():
+
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+            self._nudge_popup = None
+
+            self._nudge_cooldown_until = time.time() + 3
+
+        def press_ctrl_w_if_front():
+
+            if foreground_window_handle() == hwnd:
+                press_ctrl_w()
+
+        def close_clicked():
+
+            if not window_exists(hwnd):
+                finish()
+                return
+
+            state["attempts"] += 1
+
+            # Step aside so the tab visibly closes and any "are you
+            # sure?" box can be answered.
+            win.withdraw()
+
+            if is_browser and state["attempts"] == 1:
+
+                bring_window_to_front(hwnd)
+
+                win.after(250, press_ctrl_w_if_front)
+
+            else:
+
+                close_window_politely(hwnd)
+
+            state["grace_until"] = time.time() + 8
+
+        action = self.make_button(
+            box, button_text(), close_clicked, width=24
+        )
+
+        action.configure(selected=True)
+
+        action.pack()
+
+        def still_distracting():
+
+            title = window_title(hwnd).lower()
+
+            return any(
+                w and w in title for w in self.nudge_words
+            )
+
+        def tick():
+
+            try:
+
+                if not win.winfo_exists():
+                    return
+
+            except Exception:
+                return
+
+            if (
+                not self.focus_running
+                or self.focus_phase != "focus"
+                or not self.nudge_on
+                or not self.nudge_strict
+                or not window_exists(hwnd)
+                or not still_distracting()
+            ):
+                finish()
+                return
+
+            if time.time() < state["grace_until"]:
+                win.after(400, tick)
+                return
+
+            if state["grace_until"]:
+
+                # The tab or app didn't close: bring the block back.
+                state["grace_until"] = 0.0
+
+                action.configure(text=button_text())
+
+                win.deiconify()
+
+            clock.configure(text=self.focus_time_text())
+
+            win.attributes("-topmost", True)
+            win.lift()
+
+            # Keep keyboard focus here, except while Task Manager is
+            # in front, so it can always be used.
+            if "task manager" not in foreground_window_title().lower():
+
+                try:
+                    win.focus_force()
+                except Exception:
+                    pass
+
+            win.after(400, tick)
+
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+
+        win.after(400, tick)
 
     def edit_nudge_words(self):
         """Add and remove nudge words one at a time. Edits stay in a
@@ -13569,7 +15241,8 @@ class StudesticsApp(tk.Tk):
                 "planning, assignments or goals.\n\n"
                 "Tip: type /notes and a topic, for example "
                 "/notes photosynthesis, and I'll write study notes "
-                "into your Notes tab."
+                "into your Notes tab. Use /newnotes instead to "
+                "replace your old notes."
             )
 
         else:
@@ -13645,6 +15318,34 @@ class StudesticsApp(tk.Tk):
             self.on_chat_input_changed
         )
 
+        # While the grey hint is showing, a click only parks the cursor
+        # at the start, and paste/cut start from an empty box.
+        self.chat_input.bind(
+            "<Button-1>", self._chat_placeholder_click, add="+"
+        )
+        self.chat_input.bind(
+            "<ButtonRelease-1>", self._chat_placeholder_click, add="+"
+        )
+        self.chat_input.bind(
+            "<<Paste>>", self._chat_placeholder_before_edit, add="+"
+        )
+        self.chat_input.bind(
+            "<<Cut>>", self._chat_placeholder_before_edit, add="+"
+        )
+
+        # Typing / opens a list of commands (arrows, Tab, Enter, Esc).
+        self._slash_menu = None
+        self._slash_index = 0
+        self._slash_matches = []
+
+        self.chat_input.bind("<Up>", lambda e: self._slash_key(-1))
+        self.chat_input.bind("<Down>", lambda e: self._slash_key(1))
+        self.chat_input.bind("<Tab>", lambda e: self._slash_key(0))
+        self.chat_input.bind("<Escape>", lambda e: self._slash_key(9))
+        self.chat_input.bind(
+            "<FocusOut>", lambda e: self._hide_slash_menu(), add="+"
+        )
+
         self.chat_input.bind(
             "<Return>",
             self.chat_enter
@@ -13693,6 +15394,28 @@ class StudesticsApp(tk.Tk):
                 fill="y"
             )
 
+        self.chat_attach_button = self.make_button(
+            input_area,
+            "",
+            self.pick_chat_files
+        )
+
+        self.chat_attach_button.circle = 38
+        self.chat_attach_button.plus = True
+        self.chat_attach_button._redraw()
+
+        self.chat_attach_button.pack(
+            side="left",
+            padx=(0, 10),
+            before=self.chat_input
+        )
+
+        self.chat_attach_bar = tk.Frame(outer, bg=PANEL)
+
+        self._chat_input_area = input_area
+
+        self._refresh_chat_attachments()
+
         self.chat_input.focus_set()
 
         self.after(
@@ -13701,6 +15424,9 @@ class StudesticsApp(tk.Tk):
         )
 
         if self.chat_busy:
+
+            if getattr(self, "_chat_stop_enabled", True):
+                self.chat_send_button.configure(text="Stop")
 
             self.start_typing_animation()
 
@@ -14154,6 +15880,8 @@ class StudesticsApp(tk.Tk):
 
             y += line_height
 
+        canvas._bubble_bg = bg_color
+
         self._bubble_selectable(canvas, words, space_w)
 
     def _draw_emoji_word(self, canvas, word, x, y, font_obj, fg_color):
@@ -14290,7 +16018,13 @@ class StudesticsApp(tk.Tk):
                     w["y"] - 1,
                     x2,
                     w["y"] + w["h"] + 2,
-                    fill="#2F6FEB",
+                    fill=(
+                        # Your own (purple) bubbles need a lighter
+                        # highlight, or it would vanish into them.
+                        _theme_mix(PURPLE, TEXT, 0.4)
+                        if getattr(canvas, "_bubble_bg", None) == PURPLE
+                        else PURPLE
+                    ),
                     outline="",
                     tags="sel"
                 )
@@ -14494,6 +16228,26 @@ class StudesticsApp(tk.Tk):
                 padx=(0, 80)
             )
 
+        paths = []
+
+        if is_user:
+            content, paths = self._bubble_attachments(content)
+
+        if paths:
+
+            files_row = tk.Frame(holder, bg=PANEL)
+
+            files_row.pack(anchor="e", pady=(0, 4 if content else 0))
+
+            for path in paths:
+
+                self._chat_attach_tile(
+                    files_row, path, size=120, removable=False
+                ).pack(side="left", padx=(8, 0))
+
+            if not content:
+                return None
+
         canvas = self.create_bubble_canvas(
             holder,
             content,
@@ -14501,9 +16255,127 @@ class StudesticsApp(tk.Tk):
             fg_color
         )
 
-        canvas.pack()
+        canvas.pack(anchor="e" if is_user else "w")
+
+        if not is_user and content.strip():
+            self._add_copy_label(holder, lambda: content)
 
         return canvas
+
+    def _copy_icon(self, kind):
+        """The copy icon (two sheets) or a tick, drawn anti-aliased.
+        kind: normal | hover | done. None without Pillow."""
+
+        if not HAS_PIL:
+            return None
+
+        cache = self.__dict__.setdefault("_copy_icons", {})
+
+        if kind in cache:
+            return cache[kind]
+
+        colour = {
+            "normal": MUTED_2, "hover": TEXT, "done": GREEN
+        }[kind]
+
+        size, k = 16, 6
+
+        img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
+
+        pen = ImageDraw.Draw(img)
+
+        line = int(1.6 * k)
+
+        if kind == "done":
+
+            pen.line(
+                [(3 * k, 8.5 * k), (6.5 * k, 12 * k), (13 * k, 4 * k)],
+                fill=colour, width=int(2 * k), joint="curve"
+            )
+
+        else:
+
+            pen.rounded_rectangle(
+                (5 * k, 1.5 * k, 14.5 * k, 11 * k),
+                radius=2 * k, outline=colour, width=line
+            )
+
+            pen.rounded_rectangle(
+                (1.5 * k, 5 * k, 11 * k, 14.5 * k),
+                radius=2 * k, outline=colour, width=line, fill=PANEL
+            )
+
+        photo = ImageTk.PhotoImage(
+            img.resize((size, size), Image.LANCZOS)
+        )
+
+        cache[kind] = photo
+
+        return photo
+
+    def _add_copy_label(self, holder, get_text):
+        """A small copy icon under an AI message."""
+
+        label = tk.Label(
+            holder, bg=PANEL, fg=MUTED_2,
+            font=("Segoe UI", 9), cursor="hand2", bd=0
+        )
+
+        def show(kind):
+
+            icon = self._copy_icon(kind)
+
+            if icon is not None:
+                label.configure(image=icon, text="")
+                label.image = icon
+            else:
+                label.configure(
+                    image="",
+                    text={"normal": "Copy", "hover": "Copy",
+                          "done": "Copied"}[kind],
+                    fg={"normal": MUTED_2, "hover": TEXT,
+                        "done": GREEN}[kind]
+                )
+
+            label.kind = kind
+
+        show("normal")
+
+        label.pack(anchor="w", pady=(3, 0))
+
+        def reset():
+
+            try:
+                if label.winfo_exists():
+                    show("normal")
+            except Exception:
+                pass
+
+        def copy(event=None):
+
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(get_text())
+            except Exception:
+                return
+
+            show("done")
+
+            label.after(1500, reset)
+
+        def enter(event=None):
+
+            if label.kind == "normal":
+                show("hover")
+
+        def leave(event=None):
+
+            if label.kind == "hover":
+                show("normal")
+
+        label.bind("<Button-1>", copy)
+        label.bind("<Enter>", enter)
+        label.bind("<Leave>", leave)
 
     def _bind_mousewheel(self, canvas):
 
@@ -14860,7 +16732,269 @@ class StudesticsApp(tk.Tk):
                 height=new_height
             )
 
+    def _chat_placeholder_click(self, event=None):
+
+        if self.chat_placeholder_active:
+
+            def park():
+                if self.chat_placeholder_active:
+                    self.chat_input.tag_remove("sel", "1.0", "end")
+                    self.chat_input.mark_set("insert", "1.0")
+
+            self.chat_input.after_idle(park)
+
+    def _chat_placeholder_before_edit(self, event=None):
+
+        self.clear_chat_placeholder()
+
+    def _fix_placeholder_edit(self):
+        """Safety net: if the hint text got edited some other way
+        (partly deleted, or text pasted into it), drop the hint so the
+        box holds only what the person typed."""
+
+        if not self.chat_placeholder_active:
+            return
+
+        cur = self.chat_input.get("1.0", "end-1c")
+        hint = self.CHAT_PLACEHOLDER_TEXT
+
+        if cur == hint:
+            return
+
+        if cur in hint:
+            new = ""
+        elif cur.startswith(hint):
+            new = cur[len(hint):]
+        elif cur.endswith(hint):
+            new = cur[:-len(hint)]
+        else:
+            new = cur
+
+        self.chat_input.delete("1.0", "end")
+        self.chat_input.insert("1.0", new)
+        self.chat_input.mark_set("insert", "end-1c")
+        self.chat_input.configure(fg=TEXT)
+        self.chat_placeholder_active = False
+        self.chat_input.edit_reset()
+
+    SLASH_COMMANDS = [
+        (
+            "/notes", "topic",
+            "Write study notes into your Notes tab "
+            "(adds to your old notes)"
+        ),
+        (
+            "/newnotes", "topic",
+            "Write new notes and replace your old notes"
+        ),
+        (
+            "/quiz", "topic or file",
+            "Quiz yourself on a topic, or on a file you attached"
+        )
+    ]
+
+    def _slash_visible(self):
+
+        menu = getattr(self, "_slash_menu", None)
+
+        try:
+            return bool(
+                menu is not None
+                and menu.winfo_exists()
+                and menu.winfo_ismapped()
+            )
+        except Exception:
+            return False
+
+    def _hide_slash_menu(self):
+
+        menu = getattr(self, "_slash_menu", None)
+
+        if menu is not None:
+            try:
+                menu.place_forget()
+            except Exception:
+                pass
+
+    def _update_slash_menu(self):
+
+        if self.chat_placeholder_active:
+            text = ""
+        else:
+            text = self.chat_input.get("1.0", "end-1c")
+
+        matches = []
+
+        if text.startswith("/") and not any(c.isspace() for c in text):
+            matches = [
+                c for c in self.SLASH_COMMANDS
+                if c[0].startswith(text.lower())
+            ]
+
+        if not matches:
+            self._hide_slash_menu()
+            return
+
+        if (
+            matches != self._slash_matches
+            or not self._slash_visible()
+        ):
+            self._slash_index = 0
+
+        self._slash_matches = matches
+
+        self._draw_slash_menu()
+
+    def _draw_slash_menu(self):
+
+        menu = self._slash_menu
+
+        try:
+            alive = menu is not None and menu.winfo_exists()
+        except Exception:
+            alive = False
+
+        if not alive:
+
+            menu = tk.Frame(
+                self.chat_input.master.master,
+                bg=PANEL_2,
+                highlightthickness=1,
+                highlightbackground=BORDER
+            )
+
+            self._slash_menu = menu
+
+        for child in menu.winfo_children():
+            child.destroy()
+
+        self._slash_rows = []
+
+        for i, (cmd, arg, desc) in enumerate(self._slash_matches):
+
+            row = tk.Frame(menu, bg=PANEL_2, cursor="hand2")
+
+            row.pack(fill="x")
+
+            top = tk.Frame(row, bg=PANEL_2)
+
+            top.pack(fill="x", padx=12, pady=(7, 0))
+
+            name = tk.Label(
+                top, text=cmd, bg=PANEL_2, fg=TEXT,
+                font=("Segoe UI", 10, "bold")
+            )
+
+            name.pack(side="left")
+
+            hint = tk.Label(
+                top, text=arg, bg=PANEL_2, fg=MUTED_2,
+                font=("Segoe UI", 9, "italic")
+            )
+
+            hint.pack(side="left", padx=(8, 0))
+
+            info = tk.Label(
+                row, text=desc, bg=PANEL_2, fg=MUTED_2,
+                font=("Segoe UI", 9), anchor="w", justify="left"
+            )
+
+            info.pack(fill="x", padx=12, pady=(0, 7))
+
+            parts = [row, top, name, hint, info]
+
+            self._slash_rows.append(parts)
+
+            for part in parts:
+
+                part.bind(
+                    "<Button-1>",
+                    lambda e, n=i: self._slash_pick(n)
+                )
+
+                part.bind(
+                    "<Enter>",
+                    lambda e, n=i: self._slash_hover(n)
+                )
+
+        self._paint_slash_rows()
+
+        width = max(320, min(self.chat_input.winfo_width(), 540))
+
+        menu.place(
+            in_=self.chat_input,
+            x=0,
+            y=-8,
+            anchor="sw",
+            width=width
+        )
+
+        menu.lift()
+
+    def _paint_slash_rows(self):
+
+        for i, parts in enumerate(getattr(self, "_slash_rows", [])):
+
+            color = BORDER if i == self._slash_index else PANEL_2
+
+            for part in parts:
+                try:
+                    part.configure(bg=color)
+                except Exception:
+                    pass
+
+    def _slash_hover(self, index):
+
+        if index != self._slash_index:
+            self._slash_index = index
+            self._paint_slash_rows()
+
+    def _slash_pick(self, index=None):
+
+        if index is None:
+            index = self._slash_index
+
+        if not self._slash_matches:
+            return
+
+        command = self._slash_matches[
+            min(index, len(self._slash_matches) - 1)
+        ][0]
+
+        self._hide_slash_menu()
+
+        self.clear_chat_placeholder()
+
+        self.chat_input.delete("1.0", "end")
+        self.chat_input.insert("1.0", command + " ")
+        self.chat_input.mark_set("insert", "end-1c")
+        self.chat_input.focus_set()
+
+    def _slash_key(self, code):
+
+        if not self._slash_visible():
+            return None
+
+        count = len(self._slash_matches)
+
+        if code in (-1, 1):
+            self._slash_index = (self._slash_index + code) % count
+            self._paint_slash_rows()
+        elif code == 0:
+            self._slash_pick()
+        else:
+            self._hide_slash_menu()
+
+        return "break"
+
     def on_chat_input_changed(self, event=None):
+
+        self._fix_placeholder_edit()
+
+        try:
+            self._update_slash_menu()
+        except Exception:
+            pass
 
         self.autosize_chat_input()
 
@@ -15186,6 +17320,13 @@ class StudesticsApp(tk.Tk):
         event
     ):
 
+        if self._slash_visible():
+            self._slash_pick()
+            return "break"
+
+        if self.chat_busy:
+            return "break"
+
         self.send_chat()
 
         return "break"
@@ -15285,7 +17426,9 @@ class StudesticsApp(tk.Tk):
             )
 
         return (
-            "STUDENT CONTEXT\n\n"
+            "STUDENT CONTEXT (background only. Do not mention their "
+            "tasks or goals unless they ask about them or it is "
+            "directly relevant to what they asked.)\n\n"
             "Pending tasks:\n"
             + (
                 "\n".join(task_lines)
@@ -15301,9 +17444,341 @@ class StudesticsApp(tk.Tk):
             )
         )
 
+    # Types Gemini reads directly (photos, PDF, audio, video).
+    CHAT_IMAGE_TYPES = {
+        ".png": "image/png", ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg", ".webp": "image/webp",
+        ".gif": "image/gif", ".heic": "image/heic",
+        ".heif": "image/heif", ".pdf": "application/pdf",
+        ".mp3": "audio/mp3", ".wav": "audio/wav",
+        ".aac": "audio/aac", ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".mp4": "video/mp4", ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo", ".webm": "video/webm",
+        ".mpeg": "video/mpeg", ".mpg": "video/mpeg",
+        ".wmv": "video/x-ms-wmv", ".flv": "video/x-flv",
+        ".3gp": "video/3gpp"
+    }
+
+    # Pictures that get a thumbnail.
+    CHAT_PHOTO_EXTS = (
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+        ".tif", ".tiff", ".ico", ".heic", ".heif"
+    )
+
+    CHAT_TEXT_TYPES = (
+        ".txt", ".md", ".csv", ".json", ".py", ".js", ".html",
+        ".css", ".c", ".cpp", ".java", ".log", ".xml", ".yaml", ".yml"
+    )
+
+    CHAT_MAX_FILES = 5
+    CHAT_MAX_FILE_MB = 15
+
+    def pick_chat_files(self):
+
+        if self.chat_busy:
+            return
+
+        paths = filedialog.askopenfilenames(
+            parent=self,
+            title="Attach files or photos",
+            filetypes=[("All files", "*.*")]
+        )
+
+        if not paths:
+            return
+
+        current = getattr(self, "chat_attachments", [])
+
+        for path in paths:
+
+            ext = Path(path).suffix.lower()
+
+            try:
+                too_big = (
+                    os.path.getsize(path)
+                    > self.CHAT_MAX_FILE_MB * 1024 * 1024
+                )
+            except OSError:
+                too_big = False
+
+            if too_big:
+                messagebox.showinfo(
+                    "Attach",
+                    f"{Path(path).name} is over "
+                    f"{self.CHAT_MAX_FILE_MB} MB.",
+                    parent=self
+                )
+                continue
+
+            if path in current:
+                continue
+
+            if len(current) >= self.CHAT_MAX_FILES:
+                messagebox.showinfo(
+                    "Attach",
+                    f"You can attach up to {self.CHAT_MAX_FILES} "
+                    "files to one message.",
+                    parent=self
+                )
+                break
+
+            current.append(path)
+
+        self.chat_attachments = current
+
+        self._refresh_chat_attachments()
+
+    def _refresh_chat_attachments(self):
+        """Shows the attached files as small chips above the box."""
+
+        bar = getattr(self, "chat_attach_bar", None)
+
+        if bar is None:
+            return
+
+        try:
+
+            for child in bar.winfo_children():
+                child.destroy()
+
+            files = getattr(self, "chat_attachments", [])
+
+            if not files:
+                bar.pack_forget()
+                return
+
+            for path in files:
+
+                tile = self._chat_attach_tile(bar, path)
+
+                tile.pack(side="left", padx=(0, 10))
+
+            if not bar.winfo_ismapped():
+
+                bar.pack(
+                    fill="x", padx=15, pady=(10, 0),
+                    before=self._chat_input_area
+                )
+
+        except Exception:
+            pass
+
+    def _chat_attach_tile(self, parent, path, size=76, removable=True):
+        """One attached file: a rounded photo thumbnail (or a file
+        card for PDFs and text) with a small x to remove it."""
+
+        box = tk.Frame(parent, bg=PANEL)
+
+        name = Path(path).name
+        ext = Path(path).suffix.lower()
+
+        cache = self.__dict__.setdefault("_chat_thumb_cache", {})
+
+        photo = cache.get((path, size))
+
+        if photo is None and HAS_PIL:
+
+            try:
+
+                from PIL import ImageOps
+
+                if ext in self.CHAT_PHOTO_EXTS:
+
+                    base = Image.open(path)
+
+                    base = ImageOps.exif_transpose(base).convert("RGB")
+
+                    base = ImageOps.fit(
+                        base, (size, size), Image.LANCZOS
+                    )
+
+                else:
+
+                    base = Image.new("RGB", (size, size), PANEL_2)
+
+                mask = Image.new("L", (size * 4, size * 4), 0)
+
+                ImageDraw.Draw(mask).rounded_rectangle(
+                    [0, 0, size * 4 - 1, size * 4 - 1],
+                    radius=int(size * 0.18) * 4,
+                    fill=255
+                )
+
+                mask = mask.resize((size, size), Image.LANCZOS)
+
+                out = Image.new("RGB", (size, size), PANEL)
+
+                out.paste(base, mask=mask)
+
+                photo = ImageTk.PhotoImage(out)
+
+                cache[(path, size)] = photo
+
+            except Exception:
+                photo = None
+
+        is_photo = ext in self.CHAT_PHOTO_EXTS
+
+        if photo is not None and is_photo:
+
+            tk.Label(
+                box, image=photo, bg=PANEL, bd=0
+            ).pack()
+
+        else:
+
+            label = name if len(name) <= 11 else name[:9] + ".."
+
+            tk.Label(
+                box,
+                image=photo if photo is not None else "",
+                text=(ext.lstrip(".").upper() or "FILE") + "\n" + label,
+                compound="center",
+                bg=PANEL_2 if photo is None else PANEL,
+                fg=TEXT,
+                font=("Segoe UI", 9, "bold"),
+                width=9 if photo is None else 0,
+                height=4 if photo is None else 0,
+                bd=0
+            ).pack()
+
+        if removable:
+
+            badge = tk.Label(
+                box, text="×", bg=BG, fg=TEXT,
+                font=("Segoe UI", 10, "bold"), padx=5,
+                cursor="hand2"
+            )
+
+            badge.place(relx=1.0, x=-4, y=4, anchor="ne")
+
+            badge.bind(
+                "<Button-1>",
+                lambda e, p=path: self._remove_chat_attachment(p)
+            )
+
+        return box
+
+    _FILES_TRAILER = re.compile(r"\n*\[\[files:(.*?)\]\]\s*$", re.S)
+    _ATTACH_NOTE = re.compile(r"\n*\(Attached: [^\n]*\)\s*$")
+    _ATTACH_DEFAULT = "Please look at the attached file(s)."
+
+    def _strip_file_trailer(self, content):
+        """Removes the hidden list of attached file paths."""
+
+        return self._FILES_TRAILER.sub("", content or "").strip()
+
+    def _bubble_attachments(self, content):
+        """(text to show, attached file paths) for a user message."""
+
+        paths = []
+
+        match = self._FILES_TRAILER.search(content or "")
+
+        if match:
+            paths = [p for p in match.group(1).split("|") if p]
+
+        text = self._strip_file_trailer(content)
+
+        if paths:
+
+            text = self._ATTACH_NOTE.sub("", text).strip()
+
+            if text == self._ATTACH_DEFAULT:
+                text = ""
+
+        return text, paths
+
+    def _remove_chat_attachment(self, path):
+
+        files = getattr(self, "chat_attachments", [])
+
+        if path in files:
+            files.remove(path)
+
+        self._refresh_chat_attachments()
+
+    def _chat_attachment_parts(self, paths):
+        """Reads the attached files into Gemini parts."""
+
+        from google.genai import types
+
+        parts = []
+
+        for path in paths:
+
+            name = Path(path).name
+            ext = Path(path).suffix.lower()
+
+            try:
+
+                if ext in self.CHAT_IMAGE_TYPES:
+
+                    with open(path, "rb") as handle:
+                        data = handle.read()
+
+                    parts.append(types.Part.from_bytes(
+                        data=data,
+                        mime_type=self.CHAT_IMAGE_TYPES[ext]
+                    ))
+
+                elif ext in (".bmp", ".tif", ".tiff", ".ico"):
+
+                    import io
+
+                    buffer = io.BytesIO()
+
+                    Image.open(path).convert("RGB").save(buffer, "PNG")
+
+                    parts.append(types.Part.from_bytes(
+                        data=buffer.getvalue(),
+                        mime_type="image/png"
+                    ))
+
+                elif ext in (".docx", ".pptx", ".xlsx"):
+
+                    parts.append(types.Part(
+                        text=(
+                            f"[Attached file: {name}]\n"
+                            + office_file_text(path)[:300000]
+                        )
+                    ))
+
+                else:
+
+                    with open(path, "rb") as handle:
+                        raw = handle.read(300000)
+
+                    if b"\x00" in raw[:4096]:
+                        raise RuntimeError(
+                            "this type of file can't be read yet "
+                            "(photos, PDFs, audio, video, Word, "
+                            "PowerPoint, Excel and text files work)"
+                        )
+
+                    parts.append(types.Part(
+                        text=(
+                            f"[Attached file: {name}]\n"
+                            + raw.decode("utf-8", "replace")
+                        )
+                    ))
+
+            except Exception as exc:
+
+                raise RuntimeError(
+                    f"Couldn't read {name}: {exc}"
+                )
+
+        return parts
+
     def send_chat(self):
 
         if self.chat_busy:
+
+            # While a reply is streaming the button reads "Stop".
+            self._chat_stop = True
+
             return
 
         if not self.get_gemini_key():
@@ -15318,6 +17793,11 @@ class StudesticsApp(tk.Tk):
 
         text = self.get_chat_input_text()
 
+        attachments = list(getattr(self, "chat_attachments", []))
+
+        if not text and attachments:
+            text = "Please look at the attached file(s)."
+
         if not text:
             return
 
@@ -15327,6 +17807,16 @@ class StudesticsApp(tk.Tk):
         )
 
         self.show_chat_placeholder()
+
+        if attachments:
+
+            self.chat_attachments = []
+
+            self._refresh_chat_attachments()
+
+            text += "\n\n(Attached: " + ", ".join(
+                Path(p).name for p in attachments
+            ) + ")\n[[files:" + "|".join(attachments) + "]]"
 
         self.db.add_message(
             "user",
@@ -15347,9 +17837,20 @@ class StudesticsApp(tk.Tk):
             fg=MUTED
         )
 
-        self.chat_send_button.configure(
-            state="disabled"
-        )
+        self._chat_stop = False
+
+        if text.lower().startswith(("/notes", "/newnotes", "/quiz")):
+
+            self.chat_send_button.configure(
+                state="disabled"
+            )
+
+        else:
+
+            self.chat_send_button.configure(
+                text="Stop",
+                state="normal"
+            )
 
         self.start_typing_animation()
 
@@ -15373,7 +17874,7 @@ class StudesticsApp(tk.Tk):
 
         threading.Thread(
             target=self.ai_worker,
-            args=(text,),
+            args=(text, attachments),
             daemon=True
         ).start()
 
@@ -15438,7 +17939,9 @@ class StudesticsApp(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _ai_fast_path(self, client, user_text, started_at, setup_s):
+    def _ai_fast_path(
+        self, client, user_text, started_at, setup_s, extra_parts=None
+    ):
         """Answer through the standard streaming call. It starts
         sending words much sooner than the Interactions call, which
         waited 13-16 s before the first word. Returns True when it
@@ -15462,7 +17965,7 @@ class StudesticsApp(tk.Tk):
 
             for row in self.db.get_messages()[-12:]:
 
-                content = (row["content"] or "").strip()
+                content = self._strip_file_trailer(row["content"] or "")
 
                 if not content:
                     continue
@@ -15511,7 +18014,12 @@ class StudesticsApp(tk.Tk):
                     "concise and encouraging. Help the student "
                     "understand topics, plan work, organize tasks and "
                     "study. Do not use emoji — the display environment "
-                    "cannot render most of them.\n\n"
+                    "cannot render most of them. "
+                    "There is no length limit on your replies. If the "
+                    "student asks for a long or detailed answer, write "
+                    "all of it in ONE reply. Never split an answer "
+                    "into parts and never ask the student to say when "
+                    "to continue.\n\n"
                     + self.get_ai_context()
                 ),
                 max_output_tokens=AI_MAX_OUTPUT_TOKENS
@@ -15523,6 +18031,9 @@ class StudesticsApp(tk.Tk):
             self._fast_path_off_until = float("inf")
 
             return False
+
+        if extra_parts:
+            contents[-1].parts.extend(extra_parts)
 
         full_text = ""
         used_model = None
@@ -15573,6 +18084,10 @@ class StudesticsApp(tk.Tk):
                             0,
                             lambda t=full_text: self.ai_stream_update(t)
                         )
+
+                    # The Stop button: keep what has arrived.
+                    if getattr(self, "_chat_stop", False):
+                        break
 
                 used_model = model_name
 
@@ -15679,9 +18194,11 @@ class StudesticsApp(tk.Tk):
 
         return "\n".join(out).strip()
 
-    def _append_to_notes(self, text):
+    def _append_to_notes(self, text, replace=False):
         """Adds text to the end of what is in the Notes editor (the
-        saved draft), marked as unsaved."""
+        saved draft), marked as unsaved. With replace=True the old
+        notes are dropped and the editor becomes a new, untitled note
+        (so a file you had open is not overwritten)."""
 
         old = getattr(self, "_note_text", None)
 
@@ -15691,6 +18208,11 @@ class StudesticsApp(tk.Tk):
         # The Notes page reads these when it opens.
         if not hasattr(self, "_note_path"):
             self._note_path = self.db.get_setting("notes_file", "")
+
+        if replace:
+            old = ""
+            self._note_path = ""
+            self.db.set_setting("notes_file", "")
 
         new = (
             (old.rstrip("\n") + "\n\n" if old.strip() else "")
@@ -15705,17 +18227,28 @@ class StudesticsApp(tk.Tk):
 
         self._note_dirty = True
 
-    def _notes_command(self, user_text):
+    def _notes_command(self, user_text, replace=False, extra_parts=None):
         """/notes <topic>  writes study notes on the topic into Notes.
-        /notes  alone saves the AI's last answer as notes."""
+        /notes  alone saves the AI's last answer as notes.
+        /newnotes does the same but replaces the old notes."""
 
-        topic = user_text.strip()[len("/notes"):].strip()
+        cmd_len = len("/newnotes") if replace else len("/notes")
+
+        clean, _paths = self._bubble_attachments(user_text)
+
+        topic = clean.strip()[cmd_len:].strip()
+
+        extra_parts = extra_parts or []
+
+        label = topic or "your attached file"
+
+        verb = "Replaced your notes with" if replace else "Added"
 
         reply, error = "", None
 
         try:
 
-            if not topic:
+            if not topic and not extra_parts:
 
                 last = ""
 
@@ -15728,7 +18261,7 @@ class StudesticsApp(tk.Tk):
                         and content
                         and not content.startswith((
                             "Gemini", "(Interrupted)", "Added ",
-                            "Use /notes"
+                            "Replaced ", "Use /notes"
                         ))
                     ):
                         last = content
@@ -15746,27 +18279,43 @@ class StudesticsApp(tk.Tk):
 
                 else:
 
-                    self._append_to_notes(self._plain_notes(last))
+                    self._append_to_notes(
+                        self._plain_notes(last), replace
+                    )
 
                     reply = (
-                        "Added my last answer to your Notes tab. "
-                        "Open Notes and press Quiz me to be quizzed."
+                        (
+                            "Replaced your notes with my last answer. "
+                            if replace else
+                            "Added my last answer to your Notes tab. "
+                        )
+                        + "Open Notes and press Quiz me to be quizzed."
                     )
 
             else:
 
                 client = self._gemini_client()
 
+                if extra_parts and topic:
+                    target = f"from the attached file(s), on: {topic}"
+                elif extra_parts:
+                    target = "from the attached file(s)"
+                else:
+                    target = f"on: {topic}"
+
                 prompt = (
                     "Write clear, well-organised study notes for a "
-                    f"student on: {topic}\n\n"
+                    f"student {target}\n\n"
                     "Plain text only. No Markdown symbols at all (no "
                     "asterisks, no # headings, no backticks). Start "
                     "with a one-line title, then short sections, each "
                     "with a heading line followed by '- ' bullet "
                     "points. Include key definitions, formulas and a "
-                    "short example where it helps. About 250 to 400 "
-                    "words."
+                    "short example where it helps. Cover the topic "
+                    "fully. If the student asks for a length (for "
+                    "example 2000 words or 3 pages), write that "
+                    "much and do not stop early; otherwise about 400 "
+                    "to 800 words."
                 )
 
                 text = ""
@@ -15779,10 +18328,14 @@ class StudesticsApp(tk.Tk):
 
                         result = client.models.generate_content(
                             model=model_name,
-                            contents=prompt,
+                            contents=(
+                                [*extra_parts, prompt]
+                                if extra_parts else prompt
+                            ),
                             config={
-                                "max_output_tokens": 2000,
-                                "http_options": {"timeout": 90000}
+                                "max_output_tokens":
+                                    AI_NOTES_MAX_OUTPUT_TOKENS,
+                                "http_options": {"timeout": 300000}
                             }
                         )
 
@@ -15803,11 +18356,16 @@ class StudesticsApp(tk.Tk):
 
                 notes = self._plain_notes(text)
 
-                self._append_to_notes(notes)
+                self._append_to_notes(notes, replace)
 
                 reply = (
-                    f"Added notes on \"{topic}\" to your Notes tab "
-                    f"({len(notes.split())} words). Open Notes to read "
+                    (
+                        f"Replaced your notes with new notes on "
+                        f"\"{label}\" "
+                        if replace else
+                        f"Added notes on \"{label}\" to your Notes tab "
+                    )
+                    + f"({len(notes.split())} words). Open Notes to read "
                     "or edit them, and press Quiz me to be quizzed."
                 )
 
@@ -15819,6 +18377,138 @@ class StudesticsApp(tk.Tk):
 
         self.after(0, lambda: self._notes_cmd_done(reply, error))
 
+    def _quiz_command(self, user_text, extra_parts=None):
+        """/quiz <topic>, or /quiz with files attached: get some study
+        text, then open the quiz window on it."""
+
+        clean, _paths = self._bubble_attachments(user_text)
+
+        topic = clean.strip()[len("/quiz"):].strip()
+
+        extra_parts = extra_parts or []
+
+        reply, error, material = "", None, ""
+
+        try:
+
+            if not topic and not extra_parts:
+
+                reply = (
+                    "Use /quiz followed by a topic, for example "
+                    "/quiz photosynthesis, or attach a file with the "
+                    "+ button and type /quiz. I'll make a "
+                    "multiple-choice quiz from it."
+                )
+
+            else:
+
+                if extra_parts and all(
+                    getattr(p, "text", None) for p in extra_parts
+                ):
+
+                    material = "\n\n".join(p.text for p in extra_parts)
+
+                else:
+
+                    client = self._gemini_client()
+
+                    if extra_parts:
+
+                        prompt = (
+                            "Write out the full content of the attached "
+                            "file(s) as plain text for studying. Keep "
+                            "every fact, definition and number. No "
+                            "commentary."
+                            + (f" Focus on: {topic}" if topic else "")
+                        )
+
+                        contents = [*extra_parts, prompt]
+
+                    else:
+
+                        contents = (
+                            "Write clear study notes of about 500 words "
+                            f"on: {topic}. Plain text only."
+                        )
+
+                    last_error = None
+
+                    for model_name in self._gemini_model_candidates():
+
+                        try:
+
+                            result = client.models.generate_content(
+                                model=model_name,
+                                contents=contents,
+                                config={
+                                    "max_output_tokens":
+                                        AI_NOTES_MAX_OUTPUT_TOKENS,
+                                    "http_options": {"timeout": 240000}
+                                }
+                            )
+
+                            material = (result.text or "").strip()
+
+                            if material:
+                                break
+
+                        except Exception as exc:
+
+                            last_error = exc
+
+                    if not material:
+
+                        raise last_error or RuntimeError(
+                            "Gemini returned nothing to make a quiz from."
+                        )
+
+                reply = "Making your quiz now."
+
+            self.db.add_message("assistant", reply)
+
+        except Exception as exc:
+
+            error = str(exc)
+
+        self.after(
+            0, lambda: self._quiz_cmd_done(reply, error, material)
+        )
+
+    def _quiz_cmd_done(self, reply, error, material):
+
+        self.chat_busy = False
+
+        try:
+
+            self.remove_typing_bubble()
+
+            self.chat_send_button.configure(
+                text="Send", state="normal"
+            )
+
+            if error:
+
+                self.chat_status.configure(text="Error", fg=RED)
+
+                self.add_chat_bubble(
+                    "assistant",
+                    "Couldn't make the quiz: " + error[:300]
+                )
+
+            else:
+
+                self.chat_status.configure(text="Ready", fg=GREEN)
+
+                self.add_chat_bubble("assistant", reply)
+
+            self.scroll_chat()
+
+        except Exception:
+            pass
+
+        if material and not error:
+            self.start_quiz(material)
+
     def _notes_cmd_done(self, reply, error):
 
         self.chat_busy = False
@@ -15826,7 +18516,9 @@ class StudesticsApp(tk.Tk):
         self.remove_typing_bubble()
 
         try:
-            self.chat_send_button.configure(state="normal")
+            self.chat_send_button.configure(
+                text="Send", state="normal"
+            )
         except Exception:
             pass
 
@@ -15849,14 +18541,34 @@ class StudesticsApp(tk.Tk):
 
     def ai_worker(
         self,
-        user_text
+        user_text,
+        attachments=None
     ):
 
         try:
 
+            extra_parts = (
+                self._chat_attachment_parts(attachments)
+                if attachments else []
+            )
+
+            if user_text.strip().lower().startswith("/quiz"):
+
+                self._quiz_command(user_text, extra_parts=extra_parts)
+
+                return
+
+            if user_text.strip().lower().startswith("/newnotes"):
+
+                self._notes_command(
+                    user_text, replace=True, extra_parts=extra_parts
+                )
+
+                return
+
             if user_text.strip().lower().startswith("/notes"):
 
-                self._notes_command(user_text)
+                self._notes_command(user_text, extra_parts=extra_parts)
 
                 return
 
@@ -15869,8 +18581,16 @@ class StudesticsApp(tk.Tk):
 
             setup_s = time.time() - started_at
 
-            if self._ai_fast_path(client, user_text, started_at, setup_s):
+            if self._ai_fast_path(
+                client, user_text, started_at, setup_s, extra_parts
+            ):
                 return
+
+            if attachments:
+                raise RuntimeError(
+                    "This Gemini setup can't take attachments right "
+                    "now. Try again in a moment."
+                )
 
             prompt = (
                 self.get_ai_context()
@@ -15901,7 +18621,12 @@ class StudesticsApp(tk.Tk):
                     "Help the student understand topics, "
                     "plan work, organize tasks and study. "
                     "Do not use emoji — the display "
-                    "environment cannot render most of them."
+                    "environment cannot render most of them. "
+                    "There is no length limit on your replies. If the "
+                    "student asks for a long or detailed answer, write "
+                    "all of it in ONE reply. Never split an answer "
+                    "into parts and never ask the student to say when "
+                    "to continue."
                 )
             }
 
@@ -16275,6 +19000,7 @@ class StudesticsApp(tk.Tk):
         try:
 
             self.chat_send_button.configure(
+                text="Send",
                 state="normal"
             )
 
@@ -16419,10 +19145,19 @@ class StudesticsApp(tk.Tk):
 
                 label = "Ready"
 
+            if getattr(self, "_chat_stop", False):
+                label = "Stopped"
+
             self.chat_status.configure(
                 text=label,
                 fg=GREEN
             )
+
+            if self.stream_canvas is not None and answer:
+
+                self._add_copy_label(
+                    self.stream_canvas.master, lambda a=answer: a
+                )
 
             # The bubble already shows the final text from the last
             # ai_stream_update call — nothing more to render.
@@ -18088,7 +20823,7 @@ class StudesticsApp(tk.Tk):
             (float_panel_outer, (0, 15)),
             (self._settings_heading(
                 "Data",
-                "Clear out what you've stored in Studestics."
+                "Back up, restore or clear what you've stored in Studestics."
             ), None),
             (data_panel, (0, 15)),
             (self._settings_heading(
@@ -18172,6 +20907,16 @@ class StudesticsApp(tk.Tk):
 
         rows = (
             (
+                "Back up and restore",
+                "Save everything to a file, or restore it from one. "
+                "Restoring replaces your data and restarts the app.",
+                (
+                    ("Back up", self.backup_data),
+                    ("Restore", self.restore_data)
+                ),
+                None
+            ),
+            (
                 "Delete all tasks",
                 "Removes every task, pending and completed, and "
                 "their pictures.",
@@ -18245,15 +20990,36 @@ class StudesticsApp(tk.Tk):
                 pady=(2, 0)
             )
 
-            self.make_button(
-                row,
-                button,
-                command,
-                width=16,
-                active="#DC2626"
-            ).pack(
-                side="right"
-            )
+            if isinstance(button, tuple):
+
+                # The two buttons sit side by side on the right.
+                buttons = tk.Frame(row, bg=PANEL)
+
+                buttons.pack(side="right")
+
+                for position, (label, action) in enumerate(button):
+
+                    self.make_button(
+                        buttons,
+                        label,
+                        action,
+                        width=10
+                    ).pack(
+                        side="left",
+                        padx=(10 if position else 0, 0)
+                    )
+
+            else:
+
+                self.make_button(
+                    row,
+                    button,
+                    command,
+                    width=16,
+                    active="#DC2626"
+                ).pack(
+                    side="right"
+                )
 
         return outer
 
@@ -18658,6 +21424,142 @@ class StudesticsApp(tk.Tk):
         )
 
         return outer
+
+    def backup_data(self):
+        """Saves a consistent copy of the database to a chosen file."""
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Back up your data",
+            defaultextension=".db",
+            initialfile=f"Studestics backup {date.today().isoformat()}.db",
+            filetypes=[("Studestics backup", "*.db"), ("All files", "*.*")]
+        )
+
+        if not path:
+            return
+
+        try:
+
+            with self.db.lock:
+
+                target = sqlite3.connect(path)
+
+                try:
+                    self.db.connection.backup(target)
+                finally:
+                    target.close()
+
+        except Exception as exc:
+
+            messagebox.showerror(
+                "Back up",
+                f"Couldn't save the backup:\n{exc}",
+                parent=self
+            )
+
+            return
+
+        messagebox.showinfo(
+            "Back up",
+            f"Saved to:\n{path}\n\n"
+            "The backup includes your Gemini API key, so keep it "
+            "private. To restore it later, press Restore in this "
+            "same section.",
+            parent=self
+        )
+
+    def restore_data(self):
+        """Replaces the whole database with a chosen backup, then
+        restarts."""
+
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Restore a backup",
+            filetypes=[("Studestics backup", "*.db"), ("All files", "*.*")]
+        )
+
+        if not path:
+            return
+
+        try:
+
+            probe = sqlite3.connect(
+                Path(path).resolve().as_uri() + "?mode=ro", uri=True
+            )
+
+            try:
+
+                tables = {
+                    row[0] for row in probe.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table'"
+                    )
+                }
+
+            finally:
+                probe.close()
+
+        except Exception:
+
+            tables = set()
+
+        if not {"settings", "tasks", "goals"} <= tables:
+
+            messagebox.showerror(
+                "Restore",
+                "That file isn't a Studestics backup.",
+                parent=self
+            )
+
+            return
+
+        if not messagebox.askyesno(
+            "Restore",
+            "Replace everything in Studestics (tasks, goals, chat, "
+            "focus history, settings and your Gemini key) with this "
+            "backup?\n\nStudestics will restart. This can't be "
+            "undone, so press Back up first if you want to keep what "
+            "is here now.",
+            icon="warning",
+            parent=self
+        ):
+            return
+
+        try:
+
+            with self.db.lock:
+
+                source = sqlite3.connect(path)
+
+                try:
+                    source.backup(self.db.connection)
+                finally:
+                    source.close()
+
+        except Exception as exc:
+
+            messagebox.showerror(
+                "Restore",
+                f"Couldn't restore the backup:\n{exc}",
+                parent=self
+            )
+
+            return
+
+        # The Notes editor must not write its old text back.
+        for attr in ("_note_text", "_note_path", "_note_dirty"):
+
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+        messagebox.showinfo(
+            "Restore",
+            "Done. Studestics will restart now.",
+            parent=self
+        )
+
+        self.restart_app()
 
     def delete_all_tasks_confirm(self):
 
@@ -21559,6 +24461,11 @@ class StudesticsApp(tk.Tk):
     def quit_app(self):
 
         self._quitting = True
+
+        try:
+            self._music_stop()
+        except Exception:
+            pass
 
         if self.focus_job:
 
