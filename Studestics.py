@@ -11044,9 +11044,11 @@ class StudesticsApp(tk.Tk):
             padx=5
         )
 
+        # Made before the drawer, so the drawer slides over them.
+        self._build_focus_corner(panel)
+
         self._build_focus_drawer(panel)
         self._build_float_toggle(panel)
-        self._build_focus_corner(panel)
 
         self._refresh_focus_presets()
         self.update_focus_ui()
@@ -13580,6 +13582,20 @@ class StudesticsApp(tk.Tk):
                 zen["win"].destroy()
             except Exception:
                 pass
+
+            # Give the keyboard back to the main window; without this
+            # Windows leaves it with nobody and Space does nothing.
+            def regain():
+
+                try:
+
+                    self.lift()
+                    self.focus_force()
+
+                except Exception:
+                    pass
+
+            self.after(40, regain)
 
         self._paint_corner()
 
