@@ -20501,6 +20501,11 @@ class StudesticsApp(tk.Tk):
                 ):
                     return
 
+                # A wheel turn in a pop-up window (update notes, a
+                # dialog) is not meant for the page behind it.
+                if event.widget.winfo_toplevel() is not self:
+                    return
+
                 first, last = scroller.yview()
 
                 # Nothing to scroll when everything already fits.
@@ -25048,6 +25053,15 @@ class StudesticsApp(tk.Tk):
             )
 
         box.configure(yscrollcommand=update_bar)
+
+        def wheel(event):
+
+            box.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            # stop here, so nothing behind the window scrolls too
+            return "break"
+
+        box.bind("<MouseWheel>", wheel)
 
         box.pack(side="left", fill="both", expand=True)
 
