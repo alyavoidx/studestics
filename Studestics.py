@@ -25170,9 +25170,12 @@ class StudesticsApp(tk.Tk):
                         digest.update(chunk)
                         done += len(chunk)
 
-                        if total and progress:
+                        if progress:
 
-                            pct = done * 100 // total
+                            pct = (
+                                done * 100 // total if total
+                                else -max(1, done)
+                            )
 
                             if pct != last_pct:
 
@@ -25224,41 +25227,85 @@ class StudesticsApp(tk.Tk):
 
         script = Path(__file__).resolve()
 
-        request = urllib.request.Request(
-            f"https://github.com/{UPDATE_REPO}/archive/refs/tags/"
-            f"{info['tag']}.zip",
-            headers={"User-Agent": "Studestics"}
-        )
+        code = None
 
-        buffer = io.BytesIO()
+        # Just the one file for this release: small and quick. (The
+        # whole source zip is the fallback.)
+        try:
 
-        with urllib.request.urlopen(request, timeout=30) as reply:
+            single = urllib.request.Request(
+                f"https://raw.githubusercontent.com/{UPDATE_REPO}/"
+                f"{info['tag']}/{script.name}",
+                headers={"User-Agent": "Studestics"}
+            )
 
-            total = int(reply.headers.get("Content-Length") or 0)
+            data = bytearray()
 
-            while True:
+            with urllib.request.urlopen(single, timeout=30) as reply:
 
-                chunk = reply.read(65536)
+                total = int(reply.headers.get("Content-Length") or 0)
 
-                if not chunk:
-                    break
+                while True:
 
-                buffer.write(chunk)
+                    chunk = reply.read(65536)
 
-                if total and progress:
-                    progress(buffer.tell() * 100 // total)
+                    if not chunk:
+                        break
 
-        with zipfile.ZipFile(buffer) as archive:
+                    data += chunk
 
-            names = [
-                name for name in archive.namelist()
-                if name.rsplit("/", 1)[-1].lower() == script.name.lower()
-            ]
+                    if progress:
+                        progress(
+                            len(data) * 100 // total if total
+                            else -max(1, len(data))
+                        )
 
-            if not names:
-                raise RuntimeError(f"{script.name} isn't in this release.")
+            if data:
+                code = bytes(data)
 
-            code = archive.read(min(names, key=len))
+        except Exception:
+            code = None
+
+        if code is None:
+
+            request = urllib.request.Request(
+                f"https://github.com/{UPDATE_REPO}/archive/refs/tags/"
+                f"{info['tag']}.zip",
+                headers={"User-Agent": "Studestics"}
+            )
+
+            buffer = io.BytesIO()
+
+            with urllib.request.urlopen(request, timeout=30) as reply:
+
+                total = int(reply.headers.get("Content-Length") or 0)
+
+                while True:
+
+                    chunk = reply.read(65536)
+
+                    if not chunk:
+                        break
+
+                    buffer.write(chunk)
+
+                    if progress:
+                        progress(
+                            buffer.tell() * 100 // total if total
+                            else -max(1, buffer.tell())
+                        )
+
+            with zipfile.ZipFile(buffer) as archive:
+
+                names = [
+                    name for name in archive.namelist()
+                    if name.rsplit("/", 1)[-1].lower() == script.name.lower()
+                ]
+
+                if not names:
+                    raise RuntimeError(f"{script.name} isn't in this release.")
+
+                code = archive.read(min(names, key=len))
 
         compile(code, script.name, "exec")
 
@@ -25432,10 +25479,17 @@ class StudesticsApp(tk.Tk):
 
                 try:
 
-                    self._fetch_and_swap(
-                        info,
-                        lambda pct: set_status(f"Downloading\u2026  {pct}%")
-                    )
+                    def show(pct):
+
+                        if pct >= 0:
+                            set_status(f"Downloading\u2026  {pct}%")
+                        else:
+                            set_status(
+                                "Downloading\u2026  "
+                                f"{-pct / 1048576:.1f} MB"
+                            )
+
+                    self._fetch_and_swap(info, show)
 
                 except Exception as exc:
 
