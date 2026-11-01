@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -146,6 +146,10 @@ THEMES = {
     }
 }
 
+# The themes that ship with the app; anything else comes from a .css
+# file in the themes folder.
+BUILTIN_THEMES = tuple(THEMES)
+
 
 def _read_theme_name():
     """The saved theme, read straight from the settings table so the
@@ -183,6 +187,228 @@ def _theme_mix(a, b, t):
 def _theme_rgb(color):
 
     return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+
+
+# ------------------------------------------------------------
+# Theme files (.css with variables), like shareable client themes
+# ------------------------------------------------------------
+
+THEMES_DIR = APP_DIR / "themes"
+
+try:
+    THEMES_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+CUSTOM_THEME_FILES = {}
+
+# Custom themes removed while they were the running theme: still
+# needed until the next restart, but not shown in the picker.
+REMOVED_THEMES = set()
+
+
+def _css_hex(value):
+    """'#abc' or '#aabbcc' -> '#AABBCC'; anything else -> None."""
+
+    text = str(value or "").strip().lower()
+
+    match = re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", text)
+
+    if not match:
+        return None
+
+    digits = match.group(1)
+
+    if len(digits) == 3:
+        digits = "".join(c * 2 for c in digits)
+
+    return "#" + digits.upper()
+
+
+def parse_theme_css(text, fallback_name="Custom"):
+    """Reads a theme file. Variables look like `--bg: #101018;`.
+    Only --bg and --accent are required; everything else is worked
+    out from them when it is missing. Returns (name, theme) or None.
+    The name is the first /* comment */ in the file."""
+
+    text = str(text or "")
+
+    name = fallback_name
+
+    found = re.search(r"/\*(.*?)\*/", text, re.S)
+
+    if found and found.group(1).strip():
+        name = found.group(1).strip().splitlines()[0].strip()
+
+    name = re.sub(r"[^\w .'()-]", "", name).strip()[:24] or fallback_name
+
+    values = {}
+
+    for key, value in re.findall(r"--([\w-]+)\s*:\s*([^;}]+)", text):
+        values[key.strip().lower()] = value.strip()
+
+    bg = _css_hex(values.get("bg"))
+    accent = _css_hex(values.get("accent"))
+
+    if not bg or not accent:
+        return None
+
+    red, green, blue = _theme_rgb(bg)
+
+    if "light" in values:
+        light = values["light"].lower() in ("1", "true", "yes", "on")
+    else:
+        light = (red * 299 + green * 587 + blue * 114) / 1000 > 150
+
+    def pick(*keys, fallback):
+
+        for key in keys:
+
+            found_value = _css_hex(values.get(key))
+
+            if found_value:
+                return found_value
+
+        return fallback
+
+    if light:
+
+        toward = "#000000"
+
+        defaults = {
+            "sidebar": _theme_mix(bg, toward, 0.04),
+            "panel": "#FFFFFF",
+            "panel2": _theme_mix(bg, toward, 0.04),
+            "border": _theme_mix(bg, toward, 0.12),
+        }
+
+        text_default = "#1C1B26"
+
+    else:
+
+        toward = "#FFFFFF"
+
+        defaults = {
+            "sidebar": _theme_mix(bg, toward, 0.025),
+            "panel": _theme_mix(bg, toward, 0.055),
+            "panel2": _theme_mix(bg, toward, 0.11),
+            "border": _theme_mix(bg, toward, 0.19),
+        }
+
+        text_default = "#F2F2F7"
+
+    text_col = pick("text", fallback=text_default)
+
+    theme = {
+        "bg": bg,
+        "sidebar": pick("sidebar", fallback=defaults["sidebar"]),
+        "panel": pick("panel", fallback=defaults["panel"]),
+        "panel2": pick("panel2", "panel-2", fallback=defaults["panel2"]),
+        "border": pick("border", fallback=defaults["border"]),
+        "text": text_col,
+        "muted": pick(
+            "muted", fallback=_theme_mix(text_col, bg, 0.35)
+        ),
+        "muted2": pick(
+            "muted2", "muted-2", fallback=_theme_mix(text_col, bg, 0.6)
+        ),
+        "accent": accent,
+        "accent_hover": pick(
+            "accent-hover", "accent2",
+            fallback=_theme_mix(accent, "#FFFFFF", 0.3)
+        )
+    }
+
+    if light:
+        theme["light"] = True
+
+    for key in ("green", "red", "yellow", "blue"):
+
+        colour = _css_hex(values.get(key))
+
+        if colour:
+            theme[key] = colour
+
+    first = _css_hex(values.get("logo-from"))
+    second = _css_hex(values.get("logo-to"))
+
+    if first and second:
+        theme["logo_from"] = _theme_rgb(first)
+        theme["logo_to"] = _theme_rgb(second)
+
+    return name, theme
+
+
+def theme_to_css(name, theme):
+    """The text of a theme file for `theme`."""
+
+    lines = [f"/* {name} */", ":root {"]
+
+    for key, label in (
+        ("bg", "bg"), ("sidebar", "sidebar"), ("panel", "panel"),
+        ("panel2", "panel2"), ("border", "border"), ("text", "text"),
+        ("muted", "muted"), ("muted2", "muted2"),
+        ("accent", "accent"), ("accent_hover", "accent-hover")
+    ):
+        lines.append(f"  --{label}: {theme[key]};")
+
+    if "logo_from" in theme:
+
+        lines.append("  --logo-from: #%02X%02X%02X;" % tuple(theme["logo_from"]))
+        lines.append("  --logo-to: #%02X%02X%02X;" % tuple(theme["logo_to"]))
+
+    if theme.get("light"):
+        lines.append("  --light: true;")
+
+    lines.append("}")
+
+    return "\n".join(lines) + "\n"
+
+
+def load_custom_themes():
+    """(Re)reads every .css file in the themes folder into THEMES."""
+
+    for name in [n for n in THEMES if n not in BUILTIN_THEMES]:
+        del THEMES[name]
+
+    CUSTOM_THEME_FILES.clear()
+
+    try:
+        files = sorted(THEMES_DIR.glob("*.css"))
+    except Exception:
+        files = []
+
+    for path in files:
+
+        try:
+
+            parsed = parse_theme_css(
+                path.read_text(encoding="utf-8", errors="ignore"),
+                path.stem
+            )
+
+        except Exception:
+            parsed = None
+
+        if not parsed:
+            continue
+
+        name, theme = parsed
+
+        base, number = name, 2
+
+        while name in THEMES:
+
+            name = f"{base} ({number})"
+
+            number += 1
+
+        THEMES[name] = theme
+
+        CUSTOM_THEME_FILES[name] = path
+
+
+load_custom_themes()
 
 
 THEME_NAME = _read_theme_name()
@@ -690,6 +916,258 @@ def lofi_path():
 
 
 
+def picture_palette(path, count=6):
+    """The main colours of a picture, best first, plus a small
+    preview of it. Returns (list of (r, g, b), PIL image)."""
+
+    import colorsys
+    from PIL import ImageOps
+
+    with Image.open(path) as opened:
+        img = ImageOps.exif_transpose(opened).convert("RGB")
+
+    preview = ImageOps.fit(img, (240, 150), Image.LANCZOS)
+
+    small = img.copy()
+
+    small.thumbnail((160, 160))
+
+    quant = small.quantize(colors=12)
+
+    palette = quant.getpalette() or []
+
+    found = quant.getcolors() or []
+
+    total = sum(n for n, _ in found) or 1
+
+    scored = []
+
+    for n, index in found:
+
+        r, g, b = palette[index * 3:index * 3 + 3]
+
+        _, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+
+        # Common, colourful and not-too-dark colours win.
+        scored.append(
+            (math.sqrt(n / total) * (0.15 + s) * (0.25 + v), (r, g, b), v)
+        )
+
+    scored.sort(reverse=True)
+
+    # Near-black colours make poor accents; use them only if there is
+    # nothing else.
+    bright = [item for item in scored if item[2] >= 0.22]
+
+    chosen = []
+
+    for _, rgb, _v in (bright or scored):
+
+        if all(
+            sum((a - b) ** 2 for a, b in zip(rgb, other)) > 55 ** 2
+            for other in chosen
+        ):
+            chosen.append(rgb)
+
+        if len(chosen) >= count:
+            break
+
+    return chosen or [(124, 58, 237)], preview
+
+
+def theme_from_accent(rgb):
+    """A dark theme built around one colour: tinted backgrounds and
+    panels, and that colour (made strong enough) as the accent."""
+
+    import colorsys
+
+    h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in rgb))
+
+    def hexhsv(hue, sat, val):
+
+        r, g, b = colorsys.hsv_to_rgb(
+            hue % 1.0, max(0.0, min(1.0, sat)), max(0.0, min(1.0, val))
+        )
+
+        return "#%02X%02X%02X" % (
+            round(r * 255), round(g * 255), round(b * 255)
+        )
+
+    if s < 0.1:
+
+        # A grey picture: keep the app grey, not red.
+        tint, acc_s = s * 0.5, s
+
+    else:
+
+        tint = min(0.55, max(0.18, s * 0.65))
+        acc_s = max(s, 0.5)
+
+    acc_v = min(0.95, max(v, 0.78))
+
+    return {
+        "bg": hexhsv(h, tint, 0.075),
+        "sidebar": hexhsv(h, tint, 0.095),
+        "panel": hexhsv(h, tint * 0.95, 0.13),
+        "panel2": hexhsv(h, tint * 0.9, 0.19),
+        "border": hexhsv(h, tint * 0.8, 0.27),
+        "text": hexhsv(h, 0.05 if s >= 0.1 else 0.0, 0.97),
+        "muted": hexhsv(h, 0.14 if s >= 0.1 else 0.0, 0.76),
+        "muted2": hexhsv(h, 0.2 if s >= 0.1 else 0.0, 0.52),
+        "accent": hexhsv(h, acc_s, acc_v),
+        "accent_hover": hexhsv(h, acc_s * 0.65, min(1.0, acc_v + 0.1))
+    }
+
+
+TIMER_BG_DEFAULTS = {
+    "brightness": 100, "saturation": 100, "hue": 0,
+    "blur": 0, "darkness": 25
+}
+
+
+def adjust_picture(img, p):
+    """The timer background with the sliders applied. `blur` is in
+    pixels on a 1920-wide screen and is scaled to the picture."""
+
+    out = img
+
+    if p["blur"]:
+
+        out = out.filter(
+            ImageFilter.GaussianBlur(p["blur"] * img.width / 1920.0)
+        )
+
+    if p["brightness"] != 100:
+        out = ImageEnhance.Brightness(out).enhance(p["brightness"] / 100.0)
+
+    if p["saturation"] != 100:
+        out = ImageEnhance.Color(out).enhance(p["saturation"] / 100.0)
+
+    if p["hue"]:
+
+        shift = int(round(p["hue"] * 255 / 360.0))
+
+        h, s, v = out.convert("HSV").split()
+
+        h = h.point([(i + shift) % 256 for i in range(256)])
+
+        out = Image.merge("HSV", (h, s, v)).convert("RGB")
+
+    if p["darkness"]:
+
+        out = Image.blend(
+            out, Image.new("RGB", out.size, "#000000"),
+            p["darkness"] / 100.0
+        )
+
+    return out
+
+
+def cover_fit(img, size):
+    """Scales a picture to cover `size` and crops the middle, with a
+    fast reduction step for big photos."""
+
+    w, h = size
+
+    scale = max(w / img.width, h / img.height)
+
+    new = (
+        max(w, int(round(img.width * scale))),
+        max(h, int(round(img.height * scale)))
+    )
+
+    img = img.resize(new, Image.LANCZOS, reducing_gap=2.0)
+
+    left = (new[0] - w) // 2
+    top = (new[1] - h) // 2
+
+    return img.crop((left, top, left + w, top + h))
+
+
+def render_timer_background(path, params, size):
+    """The chosen picture with the sliders applied, at `size`. Heavy
+    blur is done at half size and scaled up, which looks the same and
+    is much faster."""
+
+    from PIL import ImageOps
+
+    work = size
+
+    if params["blur"] >= 4:
+        work = (max(2, size[0] // 2), max(2, size[1] // 2))
+
+    with Image.open(path) as opened:
+
+        try:
+            opened.draft("RGB", (work[0] * 2, work[1] * 2))
+        except Exception:
+            pass
+
+        base = ImageOps.exif_transpose(opened).convert("RGB")
+
+    out = adjust_picture(cover_fit(base, work), params)
+
+    if work != size:
+        out = out.resize(size, Image.BICUBIC)
+
+    return out
+
+
+def render_timer_frames(path, params, size, min_ms=20, limit=120):
+    """The frames of an animated GIF with the sliders applied, at full
+    `size`, kept as small JPEG data: [[bytes, milliseconds], ...]. None
+    when the picture isn't animated. Very long GIFs are thinned out."""
+
+    import io
+    from PIL import ImageSequence
+
+    work = size
+
+    if params["blur"] >= 4:
+        work = (max(2, size[0] // 2), max(2, size[1] // 2))
+
+    with Image.open(path) as opened:
+
+        total = getattr(opened, "n_frames", 1)
+
+        if total < 2:
+            return None
+
+        step = max(1, -(-total // limit))
+
+        frames = []
+
+        waited = 0
+        pending = False
+
+        for i, frame in enumerate(ImageSequence.Iterator(opened)):
+
+            waited += max(20, int(frame.info.get("duration", 100) or 100))
+
+            if i % step == 0:
+                pending = True
+
+            if pending and waited >= min_ms:
+
+                shown = adjust_picture(
+                    cover_fit(frame.convert("RGB"), work), params
+                )
+
+                if work != size:
+                    shown = shown.resize(size, Image.BICUBIC)
+
+                buffer = io.BytesIO()
+
+                shown.save(buffer, "JPEG", quality=90)
+
+                frames.append([buffer.getvalue(), waited])
+
+                waited = 0
+                pending = False
+
+    return frames or None
+
+
 def version_tuple(text):
     """'v1.2.3' -> (1, 2, 3); anything unreadable -> (0, 0, 0)."""
 
@@ -861,7 +1339,8 @@ def render_float(
     bg,
     scale=4,
     zoom=1.0,
-    card=True
+    card=True,
+    soft=False
 ):
     """Draw one clock preset (needs Pillow).
 
@@ -1042,7 +1521,7 @@ def render_float(
 
     img = img.resize((ow, oh), Image.LANCZOS)
 
-    if bg is None:
+    if bg is None and not soft:
 
         # Hard edges: every pixel is either fully there or fully
         # gone, and the ones that stay keep their true colour.
@@ -3007,12 +3486,18 @@ def _catmull_rom(points, per=24):
     return out
 
 
-def app_icon_image(size=256):
+def app_icon_image(size=256, theme=None):
     """The app's logo: a purple gradient rounded square with a white,
     softly curved S and a small sparkle. Used for the window, the
     taskbar, the tray, the sidebar and the welcome page."""
 
-    key = int(size)
+    # `theme` lets the Settings previews draw another theme's logo.
+    theme_name = theme if theme in THEMES else THEME_NAME
+
+    accent = THEMES[theme_name]["accent"]
+    accent_hover = THEMES[theme_name]["accent_hover"]
+
+    key = (int(size), theme_name)
 
     if key in _LOGO_CACHE:
         return _LOGO_CACHE[key].copy()
@@ -3021,9 +3506,53 @@ def app_icon_image(size=256):
 
     u = big / 100.0
 
-    c1, c2, c3, c4 = (
-        (109, 40, 217), (132, 80, 230), (150, 108, 240), (167, 139, 250)
-    )
+    if theme_name == "Purple":
+
+        # The original purple logo, exactly as it was.
+        c1, c2, c3, c4 = (
+            (109, 40, 217), (132, 80, 230), (150, 108, 240),
+            (167, 139, 250)
+        )
+
+        shadow_colour = (40, 10, 90, 70)
+
+    else:
+
+        # Any other theme: the same logo in that theme's colours.
+        # (Some themes look too alike, so they get their own pair.)
+        own = {
+            "Light": ((71, 85, 105), (148, 163, 184)),
+            "Catppuccin": ((125, 84, 56), (224, 184, 148)),
+            "Ocean": ((23, 52, 140), (83, 155, 250)),
+            "Ice": ((8, 145, 160), (110, 231, 249))
+        }
+
+        if "logo_from" in THEMES[theme_name]:
+
+            dark = tuple(THEMES[theme_name]["logo_from"])
+            light = tuple(THEMES[theme_name]["logo_to"])
+
+        elif theme_name in own:
+
+            dark, light = own[theme_name]
+
+        else:
+
+            dark = _theme_rgb(_theme_mix(accent, "#000000", 0.14))
+            light = _theme_rgb(_theme_mix(accent_hover, "#FFFFFF", 0.12))
+
+        def blend(t):
+            return tuple(
+                int(round(a + (b - a) * t)) for a, b in zip(dark, light)
+            )
+
+        c1, c2, c3, c4 = dark, blend(0.35), blend(0.65), light
+
+        shadow = _theme_rgb(
+            _theme_mix("#%02X%02X%02X" % tuple(dark), "#000000", 0.6)
+        )
+
+        shadow_colour = shadow + (70,)
 
     corners = Image.new("RGBA", (2, 2))
 
@@ -3064,7 +3593,7 @@ def app_icon_image(size=256):
         sd.ellipse(
             [x - width / 2, y - width / 2 + 2 * u,
              x + width / 2, y + width / 2 + 2 * u],
-            fill=(40, 10, 90, 70)
+            fill=shadow_colour
         )
 
     img.alpha_composite(shadow)
@@ -3710,6 +4239,8 @@ class StudesticsApp(tk.Tk):
 
         self.start_reminders()
 
+        self.after(1600, self.prewarm_timer_background)
+
         self.bind("<F11>", self.toggle_fullscreen)
         self.bind_all("<KeyPress>", self._zen_keys, add="+")
         self.bind("<Escape>", self._leave_fullscreen, add="+")
@@ -4062,10 +4593,13 @@ class StudesticsApp(tk.Tk):
 
         chip_text = tk.Frame(self.sidebar_chip, bg=SIDEBAR)
 
+        # Stops short of the right edge so its square background
+        # doesn't poke out of the rounded highlight's corners.
         chip_text.pack(
             side="left",
             fill="x",
-            expand=True
+            expand=True,
+            padx=(0, 14)
         )
 
         self.sidebar_user = tk.Label(
@@ -4095,14 +4629,72 @@ class StudesticsApp(tk.Tk):
         )
 
         chip_widgets = (
-            self.sidebar_chip,
             self.sidebar_avatar,
             chip_text,
             self.sidebar_user,
             self.sidebar_user_sub
         )
 
-        chip_state = {"color": SIDEBAR}
+        # The highlight is a rounded shape drawn behind everything,
+        # like the one on the menu items above.
+        chip_bg = tk.Canvas(
+            self.sidebar_chip,
+            bg=SIDEBAR,
+            highlightthickness=0,
+            bd=0
+        )
+
+        chip_bg.place(x=0, y=0, relwidth=1, relheight=1)
+
+        # Canvas.lower() means 'lower an item'; this lowers the widget.
+        tk.Misc.lower(chip_bg)
+
+        chip_state = {"color": SIDEBAR, "photo": None}
+
+        def chip_paint(color):
+
+            try:
+
+                w = chip_bg.winfo_width()
+                h = chip_bg.winfo_height()
+
+                chip_bg.delete("all")
+
+                if color == SIDEBAR or w < 4 or h < 4:
+                    return
+
+                if HAS_PIL:
+
+                    scale = 4
+
+                    img = Image.new("RGB", (w * scale, h * scale), SIDEBAR)
+
+                    ImageDraw.Draw(img).rounded_rectangle(
+                        [0, 0, w * scale - 1, h * scale - 1],
+                        radius=14 * scale,
+                        fill=color
+                    )
+
+                    chip_state["photo"] = ImageTk.PhotoImage(
+                        img.resize((w, h), Image.LANCZOS)
+                    )
+
+                    chip_bg.create_image(
+                        0, 0, anchor="nw", image=chip_state["photo"]
+                    )
+
+                else:
+
+                    chip_bg.create_rectangle(
+                        0, 0, w, h, fill=color, outline=""
+                    )
+
+            except Exception:
+                pass
+
+        chip_bg.bind(
+            "<Configure>", lambda e: chip_paint(chip_state["color"])
+        )
 
         def chip_color(color):
 
@@ -4110,6 +4702,8 @@ class StudesticsApp(tk.Tk):
                 return
 
             chip_state["color"] = color
+
+            chip_paint(color)
 
             for w in chip_widgets:
 
@@ -4135,7 +4729,7 @@ class StudesticsApp(tk.Tk):
             except Exception:
                 pass
 
-        for w in chip_widgets:
+        for w in chip_widgets + (self.sidebar_chip, chip_bg):
 
             w.bind("<Enter>", lambda e: chip_color(PANEL_2))
             w.bind("<Leave>", lambda e: chip_color(SIDEBAR))
@@ -10733,6 +11327,8 @@ class StudesticsApp(tk.Tk):
         editor.bind("<Control-n>", new_note)
         editor.bind("<Destroy>", on_destroy)
 
+        self._bind_word_delete(editor)
+
         # Tab inserts a real tab; Ctrl+A selects everything.
         editor.bind(
             "<Control-a>",
@@ -11052,6 +11648,9 @@ class StudesticsApp(tk.Tk):
 
         self._refresh_focus_presets()
         self.update_focus_ui()
+
+        # Get the timer background ready for the full screen view.
+        self.prewarm_timer_background()
 
     def _make_reveal(self, parent, bg):
         """A frame that slides open/shut with an ease-out animation.
@@ -13340,9 +13939,26 @@ class StudesticsApp(tk.Tk):
 
         canvas.pack(fill="both", expand=True)
 
-        ring_zoom = 0.46 * sh / FLOAT_SIZES["ring"][1]
+        # The same clock style as on the Focus page and floating clock.
+        style = (
+            self.float_style
+            if self.float_style in FLOAT_SIZES
+            else "ring"
+        )
 
-        diameter = float_layout("ring", ring_zoom)["size"][1]
+        base_w, base_h = FLOAT_SIZES[style]
+
+        if style in ("ring", "ticks"):
+            ring_zoom = 0.46 * sh / base_h
+        else:
+            # The wide ones: about 40% of the screen width.
+            ring_zoom = min(0.40 * sw / base_w, 0.30 * sh / base_h)
+
+        lay = float_layout(style, ring_zoom)
+
+        shape_w, shape_h = lay["size"]
+
+        diameter = shape_h
 
         zen = {
             "win": win,
@@ -13358,18 +13974,36 @@ class StudesticsApp(tk.Tk):
 
         cx, cy = sw / 2, sh / 2
 
+        # The picture chosen in Settings, behind everything else.
+        bg_image = self.timer_background_image((sw, sh))
+
+        if bg_image is not None:
+
+            zen["bg_photo"] = ImageTk.PhotoImage(bg_image)
+
+            canvas.create_image(
+                0, 0, anchor="nw", image=zen["bg_photo"], tags="bgpic"
+            )
+
+            self.after(60, lambda: self._start_bg_animation(zen, sw, sh))
+
+        ox, oy = cx - shape_w / 2, cy - shape_h / 2
+
+        tx, ty, tpx = lay["time"]
+        sx, sy, spx = lay["status"]
+
         time_id = canvas.create_text(
-            cx, cy - diameter * 0.03,
+            ox + tx, oy + ty,
             text="",
             fill=TEXT,
-            font=("Segoe UI", -int(diameter * 0.2), "bold")
+            font=("Segoe UI", -tpx, "bold")
         )
 
         status_id = canvas.create_text(
-            cx, cy + diameter * 0.17,
+            ox + sx, oy + sy,
             text="",
             fill=MUTED,
-            font=("Segoe UI", -int(diameter * 0.058))
+            font=("Segoe UI", -spx)
         )
 
         hint_id = canvas.create_text(
@@ -13412,12 +14046,13 @@ class StudesticsApp(tk.Tk):
                 if HAS_PIL:
 
                     img, _ = render_float(
-                        "ring",
+                        style,
                         fraction,
                         color,
-                        BG,
+                        None if bg_image is not None else BG,
                         zoom=ring_zoom,
-                        card=False
+                        card=style in ("pill", "bar"),
+                        soft=bg_image is not None
                     )
 
                     zen["photo"] = ImageTk.PhotoImage(img)
@@ -13449,7 +14084,8 @@ class StudesticsApp(tk.Tk):
                             tags="ring"
                         )
 
-                canvas.tag_lower("ring")
+                # Just under the time, but above the picture.
+                canvas.tag_lower("ring", time_id)
 
             # An overlay window doesn't always get the keyboard from
             # Windows; take it back if it is somewhere else.
@@ -14281,27 +14917,29 @@ class StudesticsApp(tk.Tk):
 
             if word and word in title:
 
-                hwnd = foreground_window_handle()
-
-                if self.nudge_strict and hwnd:
-
-                    self._nudge_cooldown_until = now + 3
-
-                    self.focus_nudges += 1
-
-                    self.show_strict_overlay(word, hwnd)
-
-                    return
-
-                self._nudge_cooldown_until = (
-                    now + NUDGE_COOLDOWN_SECONDS
-                )
-
-                self.focus_nudges += 1
-
-                self.show_nudge(word)
+                self._nudge_fire(word, now)
 
                 return
+
+    def _nudge_fire(self, word, now):
+
+        hwnd = foreground_window_handle()
+
+        if self.nudge_strict and hwnd:
+
+            self._nudge_cooldown_until = now + 3
+
+            self.focus_nudges += 1
+
+            self.show_strict_overlay(word, hwnd)
+
+            return
+
+        self._nudge_cooldown_until = now + NUDGE_COOLDOWN_SECONDS
+
+        self.focus_nudges += 1
+
+        self.show_nudge(word)
 
     def _nudge_beep(self):
         """One short beep that doesn't touch any other alarm."""
@@ -14641,7 +15279,7 @@ class StudesticsApp(tk.Tk):
         win.transient(self)
         win.grab_set()
 
-        self.center_window(win, 580, 520)
+        self.center_window(win, 580, 560)
 
         words = list(self.nudge_words)
 
@@ -14757,10 +15395,17 @@ class StudesticsApp(tk.Tk):
             row = None
             used = 0
 
-            for label, command, active in items:
+            for item in items:
+
+                label, command, active = item[:3]
+
+                drop = item[3] if len(item) > 3 else None
 
                 # Same padding RoundedButton adds, plus the gap.
                 needed = chip_font.measure(label) + 26 + 8
+
+                if drop:
+                    needed += 24
 
                 if row is None or used + needed > 520:
 
@@ -14776,15 +15421,39 @@ class StudesticsApp(tk.Tk):
 
                     used = 0
 
-                self.make_button(
-                    row,
-                    label,
-                    command,
-                    active=active
-                ).pack(
-                    side="left",
-                    padx=(0, 8)
-                )
+                if drop:
+
+                    # One pill: click the word to add it, click the
+                    # x at its right end to hide the suggestion.
+                    pill = self.make_button(
+                        row,
+                        label + "   ×",
+                        command,
+                        active=active
+                    )
+
+                    pill.pack(side="left", padx=(0, 8))
+
+                    def click(event, pill=pill, command=command, drop=drop):
+
+                        if event.x >= pill.canvas.winfo_width() - 34:
+                            drop()
+                        else:
+                            command()
+
+                    pill.canvas.bind("<Button-1>", click)
+
+                else:
+
+                    self.make_button(
+                        row,
+                        label,
+                        command,
+                        active=active
+                    ).pack(
+                        side="left",
+                        padx=(0, 8)
+                    )
 
                 used += needed
 
@@ -14815,7 +15484,8 @@ class StudesticsApp(tk.Tk):
             # Eight at a time keeps the dialog compact; adding one
             # slides the next suggestion in.
             available = [
-                w for w in NUDGE_SUGGESTIONS if w not in words
+                w for w in NUDGE_SUGGESTIONS
+                if w not in words and w not in hidden
             ][:8]
 
             sugg_label.configure(
@@ -14825,10 +15495,64 @@ class StudesticsApp(tk.Tk):
             flow(
                 sugg,
                 [
-                    (f"+ {w}", lambda w=w: add_word(w), PURPLE_HOVER)
+                    (
+                        f"+ {w}",
+                        lambda w=w: add_word(w),
+                        PURPLE_HOVER,
+                        lambda w=w: hide_suggestion(w)
+                    )
                     for w in available
                 ]
             )
+
+            fit()
+
+        def fit():
+            """Make the window as tall as what is in it."""
+
+            try:
+
+                win.update_idletasks()
+
+                width = max(win.winfo_width(), 580)
+
+                height = min(
+                    win.winfo_reqheight() + 4,
+                    win.winfo_screenheight() - 80
+                )
+
+                if first_fit["done"]:
+
+                    win.geometry(f"{width}x{height}")
+
+                else:
+
+                    first_fit["done"] = True
+
+                    self.center_window(win, 580, height)
+
+            except Exception:
+                pass
+
+        first_fit = {"done": False}
+
+        # Suggestions the user crossed out; they stay gone.
+        hidden = set(
+            parse_words(
+                self.db.get_setting("nudge_hidden_suggestions", "")
+            )
+        )
+
+        def hide_suggestion(word):
+
+            hidden.add(word)
+
+            self.db.set_setting(
+                "nudge_hidden_suggestions",
+                ", ".join(sorted(hidden))
+            )
+
+            render()
 
         def remove(word):
 
@@ -14887,6 +15611,10 @@ class StudesticsApp(tk.Tk):
         def reset_defaults():
 
             words[:] = parse_words(DEFAULT_NUDGE_WORDS)
+
+            hidden.clear()
+
+            self.db.set_setting("nudge_hidden_suggestions", "")
 
             render()
 
@@ -16598,6 +17326,75 @@ class StudesticsApp(tk.Tk):
     # Standard text-editing shortcuts
     # --------------------------------------------------------
 
+    def _bind_word_delete(self, text_widget):
+        """Ctrl+Backspace deletes the word before the cursor and
+        Ctrl+Delete the word after it, like in any Windows editor."""
+
+        def delete_word_backward(event):
+
+            try:
+
+                selected = text_widget.tag_ranges("sel")
+
+                if selected:
+                    text_widget.delete(selected[0], selected[1])
+                    return "break"
+
+                line, col = map(int, text_widget.index("insert").split("."))
+
+                if col == 0:
+
+                    text_widget.delete("insert -1c", "insert")
+
+                    return "break"
+
+                before = text_widget.get(f"{line}.0", "insert")
+
+                match = re.search(r"(\w+|[^\w\s]+)\s*$|\s+$", before)
+
+                start = match.start() if match else col - 1
+
+                text_widget.delete(f"{line}.{start}", "insert")
+
+            except tk.TclError:
+                pass
+
+            return "break"
+
+        def delete_word_forward(event):
+
+            try:
+
+                selected = text_widget.tag_ranges("sel")
+
+                if selected:
+                    text_widget.delete(selected[0], selected[1])
+                    return "break"
+
+                line, col = map(int, text_widget.index("insert").split("."))
+
+                after = text_widget.get("insert", f"{line}.end")
+
+                if not after:
+
+                    text_widget.delete("insert", "insert +1c")
+
+                    return "break"
+
+                match = re.match(r"\s*(\w+|[^\w\s]+)|\s+", after)
+
+                end = match.end() if match else 1
+
+                text_widget.delete("insert", f"{line}.{col + end}")
+
+            except tk.TclError:
+                pass
+
+            return "break"
+
+        text_widget.bind("<Control-BackSpace>", delete_word_backward)
+        text_widget.bind("<Control-Delete>", delete_word_forward)
+
     def _bind_text_shortcuts(self, text_widget):
         """Ctrl+X/C/V already work — Tk binds cut/copy/paste to those
         keys on every platform out of the box. What Tk does NOT do by
@@ -16627,13 +17424,7 @@ class StudesticsApp(tk.Tk):
             text_widget.mark_set("insert", "end-1c")
             return "break"
 
-        def delete_word_backward(event):
-            text_widget.delete("insert -1c wordstart", "insert")
-            return "break"
-
-        def delete_word_forward(event):
-            text_widget.delete("insert", "insert wordend")
-            return "break"
+        self._bind_word_delete(text_widget)
 
         def delete_selection_then_backspace(event):
             sel_range = text_widget.tag_ranges("sel")
@@ -16657,8 +17448,6 @@ class StudesticsApp(tk.Tk):
         text_widget.bind("<Control-Shift-Z>", redo)
         text_widget.bind("<Control-y>", redo)          # common Windows redo shortcut
         text_widget.bind("<Control-a>", select_all)
-        text_widget.bind("<Control-BackSpace>", delete_word_backward)
-        text_widget.bind("<Control-Delete>", delete_word_forward)
 
     # --------------------------------------------------------
     # Chat input placeholder + autosize
@@ -20807,6 +21596,8 @@ class StudesticsApp(tk.Tk):
 
         appearance_panel = self._build_appearance_card()
 
+        timer_bg_panel = self._build_timer_bg_card()
+
         sound_panel = self._build_sound_card()
 
         update_panel = self._build_update_card()
@@ -20818,6 +21609,7 @@ class StudesticsApp(tk.Tk):
                 "Colours and theme."
             ), None),
             (appearance_panel, (0, 15)),
+            (timer_bg_panel, (0, 15)),
             (self._settings_heading(
                 "General",
                 "The AI connection and reminders."
@@ -20912,6 +21704,851 @@ class StudesticsApp(tk.Tk):
         )
 
         return box
+
+    # --------------------------------------------------------
+    # Custom themes: files, import, and "from a picture"
+    # --------------------------------------------------------
+
+    def open_themes_folder(self):
+
+        try:
+
+            THEMES_DIR.mkdir(parents=True, exist_ok=True)
+
+            if sys.platform == "win32":
+                os.startfile(str(THEMES_DIR))
+
+        except Exception:
+            pass
+
+    def _save_custom_theme(self, name, theme):
+        """Writes the theme file, selects the theme and refreshes the
+        Settings page (the new colours apply after a restart)."""
+
+        safe = re.sub(r"[^\w-]+", "_", name).strip("_") or "theme"
+
+        path = THEMES_DIR / f"{safe}.css"
+
+        THEMES_DIR.mkdir(parents=True, exist_ok=True)
+
+        path.write_text(theme_to_css(name, theme), encoding="utf-8")
+
+        load_custom_themes()
+
+        for loaded, file in CUSTOM_THEME_FILES.items():
+
+            if file == path:
+
+                self.db.set_setting("theme", loaded)
+
+                break
+
+        self.show_page("Settings")
+
+    def remove_custom_theme(self, name):
+        """Deletes a theme the user added (its file in the themes
+        folder). The built-in themes can't be removed."""
+
+        path = CUSTOM_THEME_FILES.get(name)
+
+        if not path:
+            return
+
+        if not messagebox.askyesno(
+            "Remove theme",
+            f'Remove the theme "{name}"? Its file is deleted from '
+            "the themes folder."
+        ):
+            return
+
+        try:
+            Path(path).unlink()
+        except Exception as exc:
+            messagebox.showerror("Remove theme", str(exc))
+            return
+
+        if (self.db.get_setting("theme", "") or THEME_NAME) == name:
+            self.db.set_setting("theme", "Purple")
+
+        load_custom_themes()
+
+        if name == THEME_NAME:
+            # still running with it until the next restart
+            THEMES[THEME_NAME] = _THEME
+            REMOVED_THEMES.add(name)
+
+        self.show_page("Settings")
+
+    def import_theme_file(self):
+
+        path = filedialog.askopenfilename(
+            title="Import a theme",
+            filetypes=[("Theme files", "*.css"), ("All files", "*.*")]
+        )
+
+        if not path:
+            return
+
+        try:
+
+            parsed = parse_theme_css(
+                Path(path).read_text(encoding="utf-8", errors="ignore"),
+                Path(path).stem
+            )
+
+        except Exception as exc:
+
+            messagebox.showerror("Import theme", f"Couldn't read it.\n{exc}")
+
+            return
+
+        if not parsed:
+
+            messagebox.showinfo(
+                "Import theme",
+                "A theme file needs at least a background and an accent "
+                "colour, like:\n\n--bg: #101018;\n--accent: #7aa2f7;"
+            )
+
+            return
+
+        name, theme = parsed
+
+        if name in BUILTIN_THEMES:
+            name += " (custom)"
+
+        self._save_custom_theme(name, theme)
+
+    def _set_timer_background(self, path):
+        """Keeps a copy of the picture and remembers it."""
+
+        folder = APP_DIR / "backgrounds"
+
+        folder.mkdir(parents=True, exist_ok=True)
+
+        for old in folder.glob("timer_bg.*"):
+
+            try:
+                old.unlink()
+            except Exception:
+                pass
+
+        dest = folder / ("timer_bg" + Path(path).suffix.lower())
+
+        shutil.copyfile(path, dest)
+
+        self.db.set_setting("timer_bg_path", str(dest))
+
+        return dest
+
+    def theme_from_picture(self):
+
+        if not HAS_PIL:
+
+            messagebox.showinfo(
+                "Theme from picture", "This needs the Pillow package."
+            )
+
+            return
+
+        path = filedialog.askopenfilename(
+            title="Pick a picture",
+            filetypes=[
+                ("Pictures", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not path:
+            return
+
+        try:
+            colours, preview = picture_palette(path)
+        except Exception as exc:
+
+            messagebox.showerror(
+                "Theme from picture", f"Couldn't read that picture.\n{exc}"
+            )
+
+            return
+
+        win = tk.Toplevel(self)
+
+        win.title("Theme from picture")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+
+        self.center_window(win, 560, 600)
+
+        tk.Label(
+            win, text="Theme from picture", bg=BG, fg=TEXT,
+            font=("Segoe UI", 18, "bold")
+        ).pack(anchor="w", padx=28, pady=(24, 2))
+
+        tk.Label(
+            win,
+            text="Click the colour the app should be built around.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 10)
+        ).pack(anchor="w", padx=28)
+
+        top = tk.Frame(win, bg=BG)
+
+        top.pack(anchor="w", padx=28, pady=(16, 0))
+
+        photo = ImageTk.PhotoImage(preview)
+
+        picture = tk.Label(top, image=photo, bd=0)
+
+        picture.image = photo
+
+        picture.pack(side="left")
+
+        tile = tk.Canvas(
+            top, width=126, height=78, bg=BG, highlightthickness=0, bd=0
+        )
+
+        tile.pack(side="left", padx=(20, 0), anchor="n")
+
+        swatches = tk.Frame(win, bg=BG)
+
+        swatches.pack(anchor="w", padx=28, pady=(18, 0))
+
+        chosen = {"rgb": colours[0]}
+
+        buttons = []
+
+        def purge_logo():
+
+            for key in [k for k in _LOGO_CACHE if k[1] == "__preview__"]:
+                del _LOGO_CACHE[key]
+
+        def show_preview():
+
+            theme = theme_from_accent(chosen["rgb"])
+
+            THEMES["__preview__"] = theme
+
+            purge_logo()
+
+            self._draw_theme_tile(tile, "__preview__", False, theme)
+
+            for rgb, canvas in buttons:
+
+                canvas.delete("all")
+
+                on = rgb == chosen["rgb"]
+
+                canvas.create_oval(
+                    3, 3, 33, 33,
+                    fill="#%02x%02x%02x" % rgb,
+                    outline=TEXT if on else BG,
+                    width=3
+                )
+
+        for rgb in colours:
+
+            canvas = tk.Canvas(
+                swatches, width=36, height=36, bg=BG,
+                highlightthickness=0, bd=0, cursor="hand2"
+            )
+
+            canvas.pack(side="left", padx=(0, 6))
+
+            buttons.append((rgb, canvas))
+
+            canvas.bind(
+                "<Button-1>",
+                lambda e, c=rgb: (chosen.update(rgb=c), show_preview())
+            )
+
+        tk.Label(
+            win, text="Name", bg=BG, fg=MUTED, font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w", padx=28, pady=(18, 4))
+
+        name_var = tk.StringVar(
+            value=Path(path).stem.replace("_", " ").title()[:24]
+        )
+
+        entry = self.make_entry(win, textvariable=name_var)
+
+        entry.pack(fill="x", padx=28, ipady=7)
+
+        use_bg = {"on": True}
+
+        row = tk.Frame(win, bg=BG)
+
+        row.pack(fill="x", padx=28, pady=(16, 0))
+
+        tk.Label(
+            row,
+            text="Also use it as the full screen timer background",
+            bg=BG, fg=TEXT, font=("Segoe UI", 10)
+        ).pack(side="left")
+
+        self.make_switch(
+            row, on=True, bg=BG,
+            command=lambda value: use_bg.update(on=bool(value))
+        ).pack(side="right")
+
+        bar = tk.Frame(win, bg=BG)
+
+        bar.pack(side="bottom", fill="x", padx=28, pady=20)
+
+        def close():
+
+            THEMES.pop("__preview__", None)
+
+            purge_logo()
+
+            win.destroy()
+
+        def create():
+
+            name = re.sub(r"[^\w .'()-]", "", name_var.get()).strip()[:24]
+
+            name = name or "Picture theme"
+
+            if name in BUILTIN_THEMES:
+                name += " (picture)"
+
+            theme = theme_from_accent(chosen["rgb"])
+
+            try:
+
+                if use_bg["on"]:
+                    self._set_timer_background(path)
+
+                THEMES.pop("__preview__", None)
+
+                purge_logo()
+
+                win.destroy()
+
+                self._save_custom_theme(name, theme)
+
+            except Exception as exc:
+
+                messagebox.showerror("Theme from picture", str(exc))
+
+        make = self.make_button(bar, "Create theme", create, width=14)
+
+        make.configure(selected=True)
+
+        make.pack(side="right")
+
+        self.make_button(
+            bar, "Cancel", close, width=9
+        ).pack(side="right", padx=8)
+
+        win.protocol("WM_DELETE_WINDOW", close)
+
+        show_preview()
+
+        # Exactly as tall as what is in it, so nothing is cut off.
+        win.update_idletasks()
+
+        self.center_window(win, 560, win.winfo_reqheight() + 6)
+
+    # --------------------------------------------------------
+    # Timer background (Settings card)
+    # --------------------------------------------------------
+
+    def _timer_bg_params(self):
+
+        params = {}
+
+        for key, default in TIMER_BG_DEFAULTS.items():
+
+            try:
+
+                params[key] = int(
+                    self.db.get_setting(f"timer_bg_{key}", str(default))
+                )
+
+            except ValueError:
+
+                params[key] = default
+
+        return params
+
+    def _timer_bg_args(self, size):
+        """(cache key, path, sliders) for the saved picture, or None.
+        Reads the database, so only call it from the main thread."""
+
+        if not HAS_PIL:
+            return None
+
+        path = self.db.get_setting("timer_bg_path", "")
+
+        if not path or not Path(path).exists():
+            return None
+
+        try:
+            stamp = Path(path).stat().st_mtime
+        except OSError:
+            return None
+
+        params = self._timer_bg_params()
+
+        key = (path, stamp, tuple(size), tuple(sorted(params.items())))
+
+        return key, path, params
+
+    def timer_background_image(self, size):
+        """The picture with the saved sliders applied, or None. The
+        last result is kept, so opening the full screen timer is
+        instant when it was prepared ahead of time."""
+
+        args = self._timer_bg_args(size)
+
+        if args is None:
+            return None
+
+        key, path, params = args
+
+        cached = getattr(self, "_tbg_cache", None)
+
+        if cached and cached[0] == key:
+            return cached[1]
+
+        try:
+            image = render_timer_background(path, params, tuple(size))
+        except Exception:
+            return None
+
+        self._tbg_cache = (key, image)
+
+        return image
+
+    def prewarm_timer_background(self):
+        """Prepares the picture in the background so the full screen
+        timer opens without a wait."""
+
+        try:
+
+            x, y, sw, sh = self._monitor_rect()
+
+            args = self._timer_bg_args((sw, sh))
+
+            if args is None:
+                return
+
+            key, path, params = args
+
+            cached = getattr(self, "_tbg_cache", None)
+
+            need_still = not (cached and cached[0] == key)
+
+            need_frames = (
+                path.lower().endswith(".gif")
+                and not self._frames_ready(key)
+            )
+
+            if not need_still and not need_frames:
+                return
+
+            def work():
+
+                if need_still:
+
+                    try:
+                        image = render_timer_background(
+                            path, dict(params), (sw, sh)
+                        )
+                    except Exception:
+                        return
+
+                    self._tbg_cache = (key, image)
+
+                if need_frames:
+                    self._make_frames(key, path, dict(params), (sw, sh))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        except Exception:
+            pass
+
+    def _frames_ready(self, key):
+
+        cached = getattr(self, "_tbg_frames", None)
+
+        return bool(cached and cached[0] == key)
+
+    def _make_frames(self, key, path, params, size):
+        """Prepares the frames of a GIF (runs in a thread, once)."""
+
+        if getattr(self, "_tbg_frames_busy", None) == key:
+            return
+
+        self._tbg_frames_busy = key
+
+        try:
+            frames = render_timer_frames(path, params, size)
+        except Exception:
+            frames = None
+
+        self._tbg_frames = (key, frames)
+
+    def _start_bg_animation(self, zen, sw, sh):
+        """Plays an animated GIF behind the full screen timer."""
+
+        args = self._timer_bg_args((sw, sh))
+
+        if args is None or not args[1].lower().endswith(".gif"):
+            return
+
+        key, path, params = args
+
+        if not self._frames_ready(key):
+
+            threading.Thread(
+                target=self._make_frames,
+                args=(key, path, dict(params), (sw, sh)),
+                daemon=True
+            ).start()
+
+        win, canvas = zen["win"], zen["canvas"]
+
+        # One picture the size of the screen; every frame is pasted
+        # into it, so nothing new is made per frame.
+        screen = ImageTk.PhotoImage(Image.new("RGB", (sw, sh)))
+
+        zen["bg_screen"] = screen
+
+        cursor = {"i": 0, "shown": False}
+
+        def play():
+
+            if getattr(self, "_zen", None) is not zen:
+                return
+
+            try:
+
+                if not win.winfo_exists():
+                    return
+
+            except Exception:
+                return
+
+            if not self._frames_ready(key):
+
+                zen["anim"] = win.after(300, play)
+
+                return
+
+            frames = self._tbg_frames[1]
+
+            if not frames:
+                return
+
+            started = time.perf_counter()
+
+            data, wait = frames[cursor["i"] % len(frames)]
+
+            cursor["i"] += 1
+
+            try:
+
+                import io
+
+                with Image.open(io.BytesIO(data)) as picture:
+
+                    picture.load()
+
+                    screen.paste(picture)
+
+                if not cursor["shown"]:
+
+                    canvas.itemconfig("bgpic", image=screen)
+
+                    cursor["shown"] = True
+
+            except Exception:
+                return
+
+            spent = (time.perf_counter() - started) * 1000
+
+            zen["anim"] = win.after(max(1, int(wait - spent)), play)
+
+        play()
+
+    def _timer_bg_changed(self):
+        """The picture or a slider changed."""
+
+        self.prewarm_timer_background()
+
+    def _make_slider(self, parent, label, low, high, value, on_change):
+        """A small slider: on_change(value, final) while dragging and
+        once more (final=True) when let go."""
+
+        row = tk.Frame(parent, bg=PANEL)
+
+        tk.Label(
+            row, text=label, bg=PANEL, fg=TEXT, width=11, anchor="w",
+            font=("Segoe UI", 10)
+        ).pack(side="left")
+
+        width = 230
+
+        canvas = tk.Canvas(
+            row, width=width, height=26, bg=PANEL,
+            highlightthickness=0, bd=0, cursor="hand2"
+        )
+
+        canvas.pack(side="left")
+
+        readout = tk.Label(
+            row, text=str(value), bg=PANEL, fg=MUTED, width=5,
+            anchor="e", font=("Segoe UI", 10)
+        )
+
+        readout.pack(side="left")
+
+        state = {"value": value}
+
+        def draw():
+
+            span = width - 20
+
+            x = 10 + (state["value"] - low) / (high - low) * span
+
+            canvas.delete("all")
+
+            canvas.create_line(
+                10, 13, width - 10, 13, fill=BORDER, width=4,
+                capstyle="round"
+            )
+
+            canvas.create_line(
+                10, 13, x, 13, fill=PURPLE, width=4, capstyle="round"
+            )
+
+            canvas.create_oval(
+                x - 8, 5, x + 8, 21, fill=PURPLE_HOVER, outline=""
+            )
+
+            readout.configure(text=str(state["value"]))
+
+        def move(event, final=False):
+
+            span = width - 20
+
+            ratio = max(0.0, min(1.0, (event.x - 10) / span))
+
+            state["value"] = int(round(low + ratio * (high - low)))
+
+            draw()
+
+            on_change(state["value"], final)
+
+        canvas.bind("<Button-1>", move)
+        canvas.bind("<B1-Motion>", move)
+        canvas.bind("<ButtonRelease-1>", lambda e: move(e, True))
+
+        draw()
+
+        return row
+
+    def _build_timer_bg_card(self):
+
+        outer, card = self.rounded_panel(self.page, radius=16, fit=True)
+
+        tk.Label(
+            card, text="Timer background", bg=PANEL, fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=25, pady=(18, 2))
+
+        tk.Label(
+            card,
+            text=(
+                "A picture behind the timer when you press F or the "
+                "full screen button."
+            ),
+            bg=PANEL, fg=MUTED_2, font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=25)
+
+        body = tk.Frame(card, bg=PANEL)
+
+        body.pack(anchor="w", padx=25, pady=(14, 16))
+
+        left = tk.Frame(body, bg=PANEL)
+
+        left.pack(side="left", anchor="n")
+
+        pw, ph = 384, 216
+
+        preview = tk.Canvas(
+            left, width=pw, height=ph, bg=PANEL_2, highlightthickness=1,
+            highlightbackground=BORDER, bd=0
+        )
+
+        preview.pack()
+
+        right = tk.Frame(body, bg=PANEL)
+
+        right.pack(side="left", anchor="n", padx=(26, 0))
+
+        params = self._timer_bg_params()
+
+        state = {"base": None, "job": None, "photo": None}
+
+        def load_base():
+
+            state["base"] = None
+
+            path = self.db.get_setting("timer_bg_path", "")
+
+            if not path or not Path(path).exists() or not HAS_PIL:
+                return
+
+            try:
+
+                from PIL import ImageOps
+
+                with Image.open(path) as opened:
+
+                    state["base"] = ImageOps.fit(
+                        ImageOps.exif_transpose(opened).convert("RGB"),
+                        (pw, ph), Image.LANCZOS
+                    )
+
+            except Exception:
+                state["base"] = None
+
+        def redraw():
+
+            state["job"] = None
+
+            try:
+                preview.delete("all")
+            except Exception:
+                return
+
+            if state["base"] is None:
+
+                preview.create_text(
+                    pw / 2, ph / 2,
+                    text="No picture yet",
+                    fill=MUTED_2, font=("Segoe UI", 10)
+                )
+
+                return
+
+            image = adjust_picture(state["base"], params)
+
+            state["photo"] = ImageTk.PhotoImage(image)
+
+            preview.create_image(0, 0, anchor="nw", image=state["photo"])
+
+            preview.create_text(
+                pw / 2, ph / 2, text="25:00", fill=TEXT,
+                font=("Segoe UI", -52, "bold")
+            )
+
+        def soon():
+
+            if state["job"] is None:
+                state["job"] = preview.after(60, redraw)
+
+        def pick():
+
+            path = filedialog.askopenfilename(
+                title="Pick a picture",
+                filetypes=[
+                    ("Pictures", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                    ("All files", "*.*")
+                ]
+            )
+
+            if not path:
+                return
+
+            try:
+                self._set_timer_background(path)
+            except Exception as exc:
+                messagebox.showerror("Timer background", str(exc))
+                return
+
+            load_base()
+            redraw()
+
+            self._timer_bg_changed()
+
+        def remove():
+
+            self.db.set_setting("timer_bg_path", "")
+
+            load_base()
+            redraw()
+
+            self._timer_bg_changed()
+
+        buttons = tk.Frame(right, bg=PANEL)
+
+        buttons.pack(anchor="w", pady=(0, 10))
+
+        self.make_button(
+            buttons, "Choose picture", pick, width=14
+        ).pack(side="left")
+
+        self.make_button(
+            buttons, "Remove", remove, width=8
+        ).pack(side="left", padx=8)
+
+        tk.Label(
+            right,
+            text="GIFs work too, and move in the full screen timer.",
+            bg=PANEL, fg=MUTED_2, font=("Segoe UI", 9)
+        ).pack(anchor="w", pady=(0, 8))
+
+        def slider(key, label, low, high):
+
+            def changed(value, final):
+
+                params[key] = value
+
+                soon()
+
+                if final:
+
+                    self.db.set_setting(f"timer_bg_{key}", str(value))
+
+                    self._timer_bg_changed()
+
+            self._make_slider(
+                right, label, low, high, params[key], changed
+            ).pack(anchor="w", pady=2)
+
+        slider("brightness", "Brightness", 20, 200)
+        slider("saturation", "Saturation", 0, 200)
+        slider("hue", "Hue", -180, 180)
+        slider("blur", "Blur", 0, 40)
+        slider("darkness", "Darkness", 0, 90)
+
+        def reset():
+
+            for key, default in TIMER_BG_DEFAULTS.items():
+
+                params[key] = default
+
+                self.db.set_setting(f"timer_bg_{key}", str(default))
+
+            self._timer_bg_changed()
+
+            self.show_page("Settings")
+
+        self.make_button(
+            right, "Reset sliders", reset, width=13
+        ).pack(anchor="w", pady=(10, 0))
+
+        load_base()
+        redraw()
+
+        tk.Frame(card, bg=PANEL, height=16).pack()
+
+        return outer
 
     def _build_data_card(self):
 
@@ -21039,6 +22676,78 @@ class StudesticsApp(tk.Tk):
 
         return outer
 
+    def _draw_theme_tile(self, canvas, name, selected, t=None):
+        """One theme preview tile."""
+
+
+        t = t or THEMES[name]
+
+        canvas.delete("all")
+
+        w, h = 126, 78
+
+        canvas.create_rectangle(
+            1, 1, w - 1, h - 1,
+            fill=t["bg"],
+            outline=t["accent_hover"] if selected else t["border"],
+            width=3 if selected else 1
+        )
+
+        canvas.create_rectangle(
+            4, 4, 28, h - 4,
+            fill=t["sidebar"],
+            outline=""
+        )
+
+        for i in range(3):
+
+            canvas.create_rectangle(
+                8, 12 + i * 14, 24, 20 + i * 14,
+                fill=t["accent_hover"] if i == 0 else t["border"],
+                outline=""
+            )
+
+        canvas.create_rectangle(
+            36, 10, w - 10, 34,
+            fill=t["panel2"],
+            outline=""
+        )
+
+        canvas.create_rectangle(
+            44, 17, 78, 21,
+            fill=t["text"],
+            outline=""
+        )
+
+        canvas.create_rectangle(
+            44, 25, 64, 28,
+            fill=t["muted"],
+            outline=""
+        )
+
+        canvas.create_rectangle(
+            36, 42, w - 10, 66,
+            fill=t["panel2"],
+            outline=""
+        )
+
+        canvas.create_rectangle(
+            w - 52, 49, w - 18, 59,
+            fill=t["accent"],
+            outline=""
+        )
+
+        # The theme's logo, small, in the top right corner.
+        if HAS_PIL:
+
+            canvas.logo_photo = ImageTk.PhotoImage(
+                app_icon_image(18, name)
+            )
+
+            canvas.create_image(
+                w - 30, 13, anchor="nw", image=canvas.logo_photo
+            )
+
     def _build_appearance_card(self):
         """Theme picker: a tile per theme with a tiny preview of it.
         The colours are read at start-up, so a change needs a restart."""
@@ -21079,63 +22788,7 @@ class StudesticsApp(tk.Tk):
         canvases = {}
 
         def draw(name, canvas, selected):
-
-            t = THEMES[name]
-
-            canvas.delete("all")
-
-            w, h = 126, 78
-
-            canvas.create_rectangle(
-                1, 1, w - 1, h - 1,
-                fill=t["bg"],
-                outline=t["accent_hover"] if selected else t["border"],
-                width=3 if selected else 1
-            )
-
-            canvas.create_rectangle(
-                4, 4, 28, h - 4,
-                fill=t["sidebar"],
-                outline=""
-            )
-
-            for i in range(3):
-
-                canvas.create_rectangle(
-                    8, 12 + i * 14, 24, 20 + i * 14,
-                    fill=t["accent_hover"] if i == 0 else t["border"],
-                    outline=""
-                )
-
-            canvas.create_rectangle(
-                36, 10, w - 10, 34,
-                fill=t["panel2"],
-                outline=""
-            )
-
-            canvas.create_rectangle(
-                44, 17, 78, 21,
-                fill=t["text"],
-                outline=""
-            )
-
-            canvas.create_rectangle(
-                44, 25, 64, 28,
-                fill=t["muted"],
-                outline=""
-            )
-
-            canvas.create_rectangle(
-                36, 42, w - 10, 66,
-                fill=t["panel2"],
-                outline=""
-            )
-
-            canvas.create_rectangle(
-                w - 52, 49, w - 18, 59,
-                fill=t["accent"],
-                outline=""
-            )
+            self._draw_theme_tile(canvas, name, selected)
 
         def choose(name):
 
@@ -21159,11 +22812,25 @@ class StudesticsApp(tk.Tk):
                     fill="x", padx=25, pady=(4, 16)
                 )
 
-        for index, name in enumerate(THEMES):
+        shown = 0
+        row = None
 
-            cell = tk.Frame(tiles, bg=PANEL)
+        for name in list(THEMES):
 
-            cell.pack(side="left", padx=4)
+            if name.startswith("__") or name in REMOVED_THEMES:
+                continue
+
+            if shown % 9 == 0:
+
+                row = tk.Frame(tiles, bg=PANEL)
+
+                row.pack(anchor="w", pady=(0, 6))
+
+            shown += 1
+
+            cell = tk.Frame(row, bg=PANEL)
+
+            cell.pack(side="left", padx=4, anchor="n")
 
             canvas = tk.Canvas(
                 cell,
@@ -21195,6 +22862,75 @@ class StudesticsApp(tk.Tk):
             label.pack(pady=(4, 0))
 
             label.bind("<Button-1>", lambda e, n=name: choose(n))
+
+            if name in CUSTOM_THEME_FILES:
+
+                pill = tk.Canvas(
+                    cell,
+                    width=64,
+                    height=20,
+                    bg=PANEL,
+                    highlightthickness=0,
+                    bd=0,
+                    cursor="hand2"
+                )
+
+                pill.pack(pady=(5, 0))
+
+                def paint(hover, c=pill):
+
+                    c.delete("all")
+
+                    self._draw_bubble_background(
+                        c, 64, 20, 10,
+                        DANGER_HOVER if hover else PANEL_2
+                    )
+
+                    c.create_text(
+                        32, 10,
+                        text="Remove",
+                        fill="#FFFFFF" if hover else MUTED,
+                        font=("Segoe UI", 8)
+                    )
+
+                paint(False)
+
+                pill.bind("<Enter>", lambda e, f=paint: f(True))
+                pill.bind("<Leave>", lambda e, f=paint: f(False))
+
+                pill.bind(
+                    "<Button-1>",
+                    lambda e, n=name: self.remove_custom_theme(n)
+                )
+
+        actions = tk.Frame(card, bg=PANEL)
+
+        actions.pack(anchor="w", padx=25, pady=(6, 4))
+
+        self.make_button(
+            actions, "Theme from picture", self.theme_from_picture,
+            width=17
+        ).pack(side="left")
+
+        self.make_button(
+            actions, "Import theme", self.import_theme_file, width=13
+        ).pack(side="left", padx=8)
+
+        self.make_button(
+            actions, "Themes folder", self.open_themes_folder, width=13
+        ).pack(side="left")
+
+        tk.Label(
+            card,
+            text=(
+                "Themes are small .css files with colour variables. "
+                "Drop one in the themes folder or import it, and share "
+                "yours the same way."
+            ),
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=25, pady=(0, 4))
 
         restart_row = tk.Frame(card, bg=PANEL)
 
@@ -24230,7 +25966,9 @@ class StudesticsApp(tk.Tk):
 
             ico = base / "studestics.ico"
 
-            if ico.exists():
+            # The packaged .ico is purple, so other themes draw their
+            # own coloured logo instead.
+            if ico.exists() and THEME_NAME == "Purple":
 
                 self.iconbitmap(default=str(ico))
 
