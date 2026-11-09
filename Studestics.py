@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -1539,6 +1539,7 @@ NAV_ICONS = {
     "Tasks": "check",
     "Goals": "target",
     "Notes": "note",
+    "Schedule": "calendar",
     "Focus Mode": "clock",
     "AI Chat": "chat",
     "Analytics": "bars",
@@ -1662,6 +1663,37 @@ def nav_icon_image(kind, color, size=26, filled=False):
                 [(8.4 * u, y * u), (15.6 * u, y * u)],
                 fill=gone if filled else color,
                 width=int(round(1.9 * u))
+            )
+
+    elif kind == "calendar":
+
+        d.rounded_rectangle(
+            box(3.5, 5, 20.5, 20.5),
+            radius=3 * u,
+            fill=color if filled else None,
+            outline=color,
+            width=lw
+        )
+
+        d.line(
+            [(3.5 * u, 10.2 * u), (20.5 * u, 10.2 * u)],
+            fill=gone if filled else color,
+            width=int(round(1.9 * u))
+        )
+
+        for x in (8, 16):
+
+            d.rounded_rectangle(
+                box(x - 1, 2.8, x + 1, 7),
+                radius=1 * u,
+                fill=color
+            )
+
+        for x, y in ((8, 14), (12, 14), (16, 14), (8, 17.4), (12, 17.4)):
+
+            d.ellipse(
+                box(x - 1.05, y - 1.05, x + 1.05, y + 1.05),
+                fill=gone if filled else color
             )
 
     elif kind == "bars":
@@ -2383,6 +2415,53 @@ def screen_rect():
     return None
 
 
+SCHEDULE_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+SCHEDULE_DAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+    "Saturday", "Sunday"
+)
+
+
+def parse_clock(text):
+    """'11', '11:30', '9 pm', '9:30pm', '2330' -> minutes since
+    midnight, or None when it isn't a time."""
+
+    cleaned = str(text).strip().lower().replace(".", ":").replace(" ", "")
+
+    found = re.fullmatch(r"(\d{1,2}):?(\d{2})?(am|pm|a|p)?", cleaned)
+
+    if not found:
+        return None
+
+    hour = int(found.group(1))
+    minute = int(found.group(2) or 0)
+    suffix = found.group(3)
+
+    if minute > 59:
+        return None
+
+    if suffix:
+
+        if not 1 <= hour <= 12:
+            return None
+
+        hour = hour % 12 + (12 if suffix.startswith("p") else 0)
+
+    elif hour > 23:
+        return None
+
+    return hour * 60 + minute
+
+
+def format_clock(minutes):
+    """Minutes since midnight -> '11:30 AM'."""
+
+    hour, minute = divmod(int(minutes), 60)
+
+    return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+
+
 # ============================================================
 # DATABASE
 # ============================================================
@@ -2457,6 +2536,23 @@ class Database:
                     day TEXT NOT NULL,
                     ended_at TEXT NOT NULL
                 );
+                """
+            )
+
+            self.connection.commit()
+
+            # The weekly timetable (Schedule page).
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedule (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    start_min INTEGER NOT NULL,
+                    end_min INTEGER NOT NULL,
+                    days TEXT NOT NULL DEFAULT '',
+                    remind_before INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                )
                 """
             )
 
@@ -2809,6 +2905,72 @@ class Database:
     # Goals
     # --------------------------------------------------------
 
+    # --------------------------------------------------------
+    # Schedule
+    # --------------------------------------------------------
+
+    def get_schedule(self):
+
+        with self.lock:
+
+            return self.connection.execute(
+                "SELECT * FROM schedule ORDER BY start_min, id"
+            ).fetchall()
+
+    def add_schedule(self, title, start_min, end_min, days, remind_before):
+
+        with self.lock:
+
+            self.connection.execute(
+                """
+                INSERT INTO schedule(
+                    title, start_min, end_min, days, remind_before,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title, start_min, end_min,
+                    ",".join(str(day) for day in sorted(days)),
+                    remind_before,
+                    datetime.now().isoformat(timespec="seconds")
+                )
+            )
+
+            self.connection.commit()
+
+    def update_schedule(
+        self, block_id, title, start_min, end_min, days, remind_before
+    ):
+
+        with self.lock:
+
+            self.connection.execute(
+                """
+                UPDATE schedule
+                SET title=?, start_min=?, end_min=?, days=?,
+                    remind_before=?
+                WHERE id=?
+                """,
+                (
+                    title, start_min, end_min,
+                    ",".join(str(day) for day in sorted(days)),
+                    remind_before, block_id
+                )
+            )
+
+            self.connection.commit()
+
+    def delete_schedule(self, block_id):
+
+        with self.lock:
+
+            self.connection.execute(
+                "DELETE FROM schedule WHERE id=?", (block_id,)
+            )
+
+            self.connection.commit()
+
     def add_goal(self, title, description="", image_path=""):
 
         with self.lock:
@@ -2978,6 +3140,7 @@ class Database:
 
         with self.lock:
 
+            self.connection.execute("DELETE FROM schedule")
             self.connection.execute("DELETE FROM messages")
             self.connection.execute("DELETE FROM focus_sessions")
             self.connection.execute(
@@ -3522,7 +3685,7 @@ def app_icon_image(size=256, theme=None):
         # (Some themes look too alike, so they get their own pair.)
         own = {
             "Light": ((71, 85, 105), (148, 163, 184)),
-            "Catppuccin": ((125, 84, 56), (224, 184, 148)),
+            "Catppuccin": ((140, 100, 215), (196, 206, 255)),
             "Ocean": ((23, 52, 140), (83, 155, 250)),
             "Ice": ((8, 145, 160), (110, 231, 249))
         }
@@ -4498,6 +4661,7 @@ class StudesticsApp(tk.Tk):
             "Tasks",
             "Goals",
             "Notes",
+            "Schedule",
             "Focus Mode",
             "AI Chat",
             "Analytics",
@@ -5455,6 +5619,9 @@ class StudesticsApp(tk.Tk):
 
         elif page_name == "Notes":
             self.build_notes()
+
+        elif page_name == "Schedule":
+            self.build_schedule()
 
         elif page_name == "Focus Mode":
             self.build_focus()
@@ -11340,6 +11507,1060 @@ class StudesticsApp(tk.Tk):
 
         editor.focus_set()
         editor.mark_set("insert", "end-1c")
+
+    # ========================================================
+    # SCHEDULE
+    # ========================================================
+
+    def build_schedule(self):
+
+        self.page_header(
+            "Schedule",
+            "Plan your days like a timetable. Studestics reminds you "
+            "when a block starts."
+        )
+
+        today = datetime.now().weekday()
+
+        if getattr(self, "_sched_day", None) is None:
+            self._sched_day = today
+
+        top = tk.Frame(self.page, bg=BG)
+
+        top.pack(fill="x", pady=(0, 14))
+
+        self.make_button(
+            top, "+ New block", lambda: self.schedule_dialog()
+        ).pack(side="left")
+
+        tabs = tk.Frame(top, bg=BG)
+
+        tabs.pack(side="right")
+
+        tab_buttons = {}
+
+        holder = tk.Frame(
+            self.page,
+            bg=PANEL,
+            highlightthickness=1,
+            highlightbackground=BORDER
+        )
+
+        holder.pack(fill="both", expand=True)
+
+        scroller = tk.Canvas(
+            holder, bg=PANEL, highlightthickness=0, bd=0
+        )
+
+        scroller.pack(fill="both", expand=True)
+
+        inner = tk.Frame(scroller, bg=PANEL)
+
+        inner_id = scroller.create_window((0, 0), window=inner, anchor="nw")
+
+        inner.bind(
+            "<Configure>",
+            lambda e: scroller.configure(scrollregion=scroller.bbox("all"))
+        )
+
+        scroller.bind(
+            "<Configure>",
+            lambda e: scroller.itemconfigure(inner_id, width=e.width)
+        )
+
+        self._sched_scroller = scroller
+
+        self.bind_all("<MouseWheel>", self._schedule_wheel)
+
+        def describe_days(days):
+
+            if len(days) == 7:
+                return "Every day"
+
+            if days == {0, 1, 2, 3, 4}:
+                return "Weekdays"
+
+            if days == {5, 6}:
+                return "Weekends"
+
+            return ", ".join(SCHEDULE_DAYS[d] for d in sorted(days))
+
+        def describe_reminder(minutes):
+
+            if minutes < 0:
+                return "No reminder"
+
+            if minutes == 0:
+                return "Reminds you at the start"
+
+            return f"Reminds you {minutes} min before"
+
+        def render(animate=True):
+
+            try:
+
+                if not inner.winfo_exists():
+                    return
+
+            except Exception:
+                return
+
+            for widget in inner.winfo_children():
+                widget.destroy()
+
+            shown = self._sched_day
+
+            for index, button in tab_buttons.items():
+                button.configure(selected=(index == shown))
+
+            now = datetime.now()
+
+            now_min = now.hour * 60 + now.minute
+
+            blocks = [
+                b for b in self.db.get_schedule()
+                if str(shown) in b["days"].split(",")
+            ]
+
+            heading = SCHEDULE_DAY_NAMES[shown]
+
+            if shown == today:
+                heading = f"Today  ·  {heading}"
+
+            tk.Label(
+                inner,
+                text=heading,
+                bg=PANEL,
+                fg=TEXT,
+                font=("Segoe UI", 13, "bold")
+            ).pack(anchor="w", padx=20, pady=(16, 2))
+
+            tk.Label(
+                inner,
+                text=(
+                    f"{len(blocks)} block" + ("" if len(blocks) == 1 else "s")
+                    if blocks else "Nothing planned yet."
+                ),
+                bg=PANEL,
+                fg=MUTED_2,
+                font=("Segoe UI", 9)
+            ).pack(anchor="w", padx=20, pady=(0, 10))
+
+            if not blocks:
+
+                return
+
+            next_id = None
+
+            if shown == today:
+
+                for b in blocks:
+
+                    if b["start_min"] > now_min:
+                        next_id = b["id"]
+                        break
+
+            timelines = []
+
+            for pos, b in enumerate(blocks):
+
+                running = (
+                    shown == today
+                    and b["start_min"] <= now_min < b["end_min"]
+                )
+
+                finished = shown == today and b["end_min"] <= now_min
+
+                wrap = tk.Frame(inner, bg=PANEL)
+
+                wrap.pack(fill="x", padx=16)
+
+                rail = tk.Canvas(
+                    wrap, width=38, height=1, bg=PANEL,
+                    highlightthickness=0, bd=0
+                )
+
+                rail.pack(side="left", fill="y")
+
+                span = max(1, b["end_min"] - b["start_min"])
+
+                fraction = (
+                    1.0 if finished
+                    else (now_min - b["start_min"]) / span if running
+                    else 0.0
+                )
+
+                state = (
+                    "done" if finished
+                    else "now" if running else "later"
+                )
+
+                timelines.append((
+                    rail, pos == 0, pos == len(blocks) - 1,
+                    state, max(0.0, min(1.0, fraction))
+                ))
+
+                row = tk.Frame(wrap, bg=PANEL_2)
+
+                row.pack(side="left", fill="x", expand=True, pady=5)
+
+                accent = tk.Frame(
+                    row,
+                    bg=GREEN if running else PURPLE,
+                    width=4
+                )
+
+                accent.pack(side="left", fill="y")
+
+                def hover(on, bar=accent, w=wrap, live=running, r=rail):
+
+                    base = GREEN if live else PURPLE
+
+                    bar.configure(
+                        bg=(GREEN if live else PURPLE_HOVER) if on else base,
+                        width=7 if on else 4
+                    )
+
+                def over(event, w=wrap, h=hover):
+
+                    h(True)
+
+                def away(event, w=wrap, h=hover):
+
+                    # Moving between the row's own children is not a
+                    # leave.
+                    inside = w.winfo_containing(
+                        w.winfo_pointerx(), w.winfo_pointery()
+                    )
+
+                    while inside is not None and inside is not w:
+
+                        inside = getattr(inside, "master", None)
+
+                    if inside is None:
+                        h(False)
+
+                wrap.bind("<Enter>", over)
+                wrap.bind("<Leave>", away)
+
+                for child in (row,):
+                    child.bind("<Enter>", over)
+                    child.bind("<Leave>", away)
+
+                tk.Label(
+                    row,
+                    text=(
+                        f"{format_clock(b['start_min'])} – "
+                        f"{format_clock(b['end_min'])}"
+                    ),
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    font=("Segoe UI", 11, "bold"),
+                    width=19,
+                    anchor="w"
+                ).pack(side="left", padx=(16, 8), pady=16)
+
+                middle = tk.Frame(row, bg=PANEL_2)
+
+                middle.pack(side="left", fill="x", expand=True)
+
+                title = b["title"]
+
+                if len(title) > 40:
+                    title = title[:39] + "…"
+
+                tk.Label(
+                    middle,
+                    text=title,
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    font=("Segoe UI", 11),
+                    anchor="w"
+                ).pack(anchor="w", pady=(12, 0))
+
+                days = {int(d) for d in b["days"].split(",") if d != ""}
+
+                tk.Label(
+                    middle,
+                    text=(
+                        f"{describe_days(days)}  ·  "
+                        f"{describe_reminder(b['remind_before'])}"
+                    ),
+                    bg=PANEL_2,
+                    fg=MUTED_2,
+                    font=("Segoe UI", 9),
+                    anchor="w"
+                ).pack(anchor="w", pady=(0, 12))
+
+                actions = tk.Frame(row, bg=PANEL_2)
+
+                actions.pack(side="right", padx=(8, 12))
+
+                self.make_button(
+                    actions,
+                    "Delete",
+                    lambda blk=b: self.delete_schedule_confirm(blk),
+                    width=7,
+                    active=DANGER_HOVER
+                ).pack(side="right", padx=(6, 0), pady=12)
+
+                self.make_button(
+                    actions,
+                    "Edit",
+                    lambda blk=b: self.schedule_dialog(blk),
+                    width=6
+                ).pack(side="right", pady=12)
+
+                if running or b["id"] == next_id:
+
+                    tk.Label(
+                        row,
+                        text="NOW" if running else "NEXT",
+                        bg=GREEN if running else PURPLE,
+                        fg="#07140B" if running else "#FFFFFF",
+                        font=("Segoe UI", 8, "bold"),
+                        padx=9,
+                        pady=2
+                    ).pack(side="right", padx=(0, 4))
+
+            tk.Frame(inner, bg=PANEL, height=8).pack()
+
+            def draw(t):
+
+                for rail, first, last, state, frac in timelines:
+
+                    try:
+
+                        paint_rail(rail, first, last, state, frac, t)
+
+                    except Exception:
+                        pass
+
+            if animate:
+
+                started = time.time()
+
+                def step():
+
+                    try:
+
+                        if not inner.winfo_exists():
+                            return
+
+                    except Exception:
+                        return
+
+                    t = min(1.0, (time.time() - started) / 0.55)
+
+                    draw(1 - (1 - t) ** 3)
+
+                    if t < 1.0:
+                        inner.after(16, step)
+
+                inner.after(30, step)
+
+            else:
+
+                inner.after(30, lambda: draw(1.0))
+
+        def paint_rail(rail, first, last, state, frac, t):
+            """Order-tracker style rail: a dot per block joined by a
+            line that fills green as the day goes by."""
+
+            rail.update_idletasks()
+
+            h = rail.winfo_height()
+
+            if h < 4:
+                return
+
+            x = 19
+
+            mid = h / 2
+
+            rail.delete("all")
+
+            grey = BORDER
+
+            def line(y0, y1, color):
+
+                if y1 > y0:
+
+                    rail.create_line(
+                        x, y0, x, y1, fill=color, width=3,
+                        capstyle="round"
+                    )
+
+            top_done = state in ("done", "now")
+
+            if not first:
+
+                line(0, mid, grey)
+
+                if top_done:
+                    line(0, mid * t, GREEN)
+
+            if not last:
+
+                line(mid, h, grey)
+
+                if state == "done":
+                    line(mid, mid + (h - mid) * t, GREEN)
+
+                elif state == "now":
+                    line(mid, mid + (h - mid) * frac * t, GREEN)
+
+            if state == "done":
+
+                rail.create_oval(
+                    x - 11, mid - 11, x + 11, mid + 11,
+                    fill=GREEN, outline=GREEN
+                )
+
+                rail.create_line(
+                    x - 5, mid, x - 1.5, mid + 4, x + 5, mid - 4,
+                    fill="#07140B", width=2.5, capstyle="round",
+                    joinstyle="round"
+                )
+
+            elif state == "now":
+
+                rail.create_oval(
+                    x - 11, mid - 11, x + 11, mid + 11,
+                    fill=PANEL, outline=GREEN, width=3
+                )
+
+                rail.create_oval(
+                    x - 5, mid - 5, x + 5, mid + 5,
+                    fill=GREEN, outline=GREEN
+                )
+
+            else:
+
+                rail.create_oval(
+                    x - 10, mid - 10, x + 10, mid + 10,
+                    fill=PANEL, outline=PURPLE, width=3
+                )
+
+        def pick(index):
+
+            self._sched_day = index
+
+            render()
+
+        for index, name in enumerate(SCHEDULE_DAYS):
+
+            button = self.make_button(
+                tabs, name, lambda i=index: pick(i), width=5
+            )
+
+            button.pack(side="left", padx=(0, 6))
+
+            tab_buttons[index] = button
+
+        render()
+
+        # Keep NOW / NEXT right while the page stays open.
+        def refresh():
+
+            try:
+
+                if (
+                    self.current_page == "Schedule"
+                    and inner.winfo_exists()
+                ):
+
+                    render(False)
+
+                    self.after(60000, refresh)
+
+            except Exception:
+                pass
+
+        self.after(60000, refresh)
+
+    def _schedule_wheel(self, event):
+
+        try:
+
+            scroller = getattr(self, "_sched_scroller", None)
+
+            if (
+                self.current_page != "Schedule"
+                or scroller is None
+                or not scroller.winfo_exists()
+                or event.widget.winfo_toplevel() is not self
+            ):
+                return
+
+            first, last = scroller.yview()
+
+            if first <= 0.0 and last >= 1.0:
+                return
+
+            scroller.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        except Exception:
+            pass
+
+    def schedule_dialog(self, block=None, day=None):
+        """Add a block to the timetable, or edit `block` (a row)."""
+
+        editing = block is not None
+
+        window = tk.Toplevel(self)
+
+        window.title("Edit block" if editing else "New block")
+
+        self.center_window(window, 600, 590)
+
+        window.configure(bg=BG)
+
+        window.transient(self)
+
+        window.grab_set()
+
+        tk.Label(
+            window,
+            text="Edit block" if editing else "New block",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 19, "bold")
+        ).pack(anchor="w", padx=28, pady=(25, 16))
+
+        buttons = tk.Frame(window, bg=BG)
+
+        buttons.pack(side="bottom", fill="x", padx=28, pady=(14, 22))
+
+        tk.Frame(window, bg=BORDER, height=1).pack(side="bottom", fill="x")
+
+        form = tk.Frame(window, bg=BG)
+
+        form.pack(fill="both", expand=True, padx=28)
+
+        tk.Label(form, text="What", bg=BG, fg=MUTED).pack(anchor="w")
+
+        title_entry = self.make_entry(form)
+
+        title_entry.pack(fill="x", ipady=8, pady=(5, 14))
+
+        now = datetime.now()
+
+        if editing:
+
+            start0, end0 = block["start_min"], block["end_min"]
+
+            days0 = {int(d) for d in block["days"].split(",") if d != ""}
+
+            remind0 = block["remind_before"]
+
+            title_entry.insert(0, block["title"])
+
+        else:
+
+            days0 = {self._sched_day if day is None else day}
+
+            # Pick up where the day's last block ends, so a timetable
+            # can be filled in without typing every time.
+            shown_day = str(min(days0))
+
+            ends = [
+                b["end_min"] for b in self.db.get_schedule()
+                if shown_day in b["days"].split(",")
+            ]
+
+            if ends:
+                start0 = min(max(ends), 23 * 60 + 30)
+            else:
+                start0 = min(23 * 60, (now.hour + 1) * 60)
+
+            end0 = min(24 * 60 - 1, start0 + 60)
+
+            remind0 = 0
+
+        tk.Label(form, text="When", bg=BG, fg=MUTED).pack(anchor="w")
+
+        times = tk.Frame(form, bg=BG)
+
+        times.pack(fill="x", pady=(5, 14))
+
+        start_entry = self.make_entry(times)
+
+        start_entry.configure(width=9, justify="center")
+
+        start_entry.pack(side="left", ipady=7)
+
+        start_entry.insert(0, format_clock(start0))
+
+        tk.Label(times, text="to", bg=BG, fg=MUTED).pack(
+            side="left", padx=10
+        )
+
+        end_entry = self.make_entry(times)
+
+        end_entry.configure(width=9, justify="center")
+
+        end_entry.pack(side="left", ipady=7)
+
+        end_entry.insert(0, format_clock(end0))
+
+        def tidy(entry):
+
+            value = parse_clock(entry.get())
+
+            if value is not None:
+
+                entry.delete(0, "end")
+                entry.insert(0, format_clock(value))
+
+        def nudge(entry, step):
+
+            value = parse_clock(entry.get())
+
+            if value is None:
+                return "break"
+
+            value = max(0, min(24 * 60 - 1, value + step))
+
+            entry.delete(0, "end")
+            entry.insert(0, format_clock(value))
+
+            return "break"
+
+        for entry in (start_entry, end_entry):
+
+            entry.bind("<FocusOut>", lambda e, w=entry: tidy(w))
+            entry.bind("<Up>", lambda e, w=entry: nudge(w, 15))
+            entry.bind("<Down>", lambda e, w=entry: nudge(w, -15))
+            entry.bind(
+                "<MouseWheel>",
+                lambda e, w=entry: nudge(w, 15 if e.delta > 0 else -15)
+            )
+
+        tk.Label(
+            times,
+            text="Arrow keys or wheel: ±15 min",
+            bg=BG,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(side="left", padx=14)
+
+        lengths = tk.Frame(form, bg=BG)
+
+        lengths.pack(fill="x", pady=(0, 14))
+
+        tk.Label(lengths, text="Lasts", bg=BG, fg=MUTED).pack(
+            side="left", padx=(0, 10)
+        )
+
+        def set_length(minutes):
+
+            begin = parse_clock(start_entry.get())
+
+            if begin is None:
+                return
+
+            end_entry.delete(0, "end")
+            end_entry.insert(
+                0, format_clock(min(begin + minutes, 24 * 60 - 1))
+            )
+
+        for label, minutes in (
+            ("30 min", 30), ("45 min", 45), ("1 hr", 60),
+            ("1.5 hr", 90), ("2 hr", 120)
+        ):
+
+            self.make_button(
+                lengths, label, lambda m=minutes: set_length(m), width=6
+            ).pack(side="left", padx=(0, 6))
+
+
+        tk.Label(form, text="Repeats on", bg=BG, fg=MUTED).pack(anchor="w")
+
+        chosen = set(days0)
+
+        day_row = tk.Frame(form, bg=BG)
+
+        day_row.pack(fill="x", pady=(5, 14))
+
+        day_buttons = {}
+
+        def paint_days():
+
+            for index, button in day_buttons.items():
+                button.configure(selected=(index in chosen))
+
+        def toggle(index):
+
+            if index in chosen:
+                chosen.discard(index)
+            else:
+                chosen.add(index)
+
+            paint_days()
+
+        for index, name in enumerate(SCHEDULE_DAYS):
+
+            button = self.make_button(
+                day_row, name, lambda i=index: toggle(i), width=4
+            )
+
+            button.pack(side="left", padx=(0, 6))
+
+            day_buttons[index] = button
+
+        paint_days()
+
+        tk.Label(
+            form, text="Remind me before it starts", bg=BG, fg=MUTED
+        ).pack(anchor="w")
+
+        remind = {"value": remind0}
+
+        remind_row = tk.Frame(form, bg=BG)
+
+        remind_row.pack(fill="x", pady=(5, 0))
+
+        remind_buttons = {}
+
+        def paint_remind():
+
+            for minutes, button in remind_buttons.items():
+                button.configure(selected=(minutes == remind["value"]))
+
+        def pick_remind(minutes):
+
+            remind["value"] = minutes
+
+            paint_remind()
+
+        for label, minutes in (
+            ("Off", -1), ("At start", 0), ("5 min", 5),
+            ("10 min", 10), ("15 min", 15)
+        ):
+
+            button = self.make_button(
+                remind_row, label,
+                lambda m=minutes: pick_remind(m), width=8
+            )
+
+            button.pack(side="left", padx=(0, 6))
+
+            remind_buttons[minutes] = button
+
+        paint_remind()
+
+        def save():
+
+            name = title_entry.get().strip()
+
+            if not name:
+
+                messagebox.showwarning(
+                    "Schedule", "Write what this block is.", parent=window
+                )
+
+                return
+
+            start = parse_clock(start_entry.get())
+            end = parse_clock(end_entry.get())
+
+            if start is None or end is None:
+
+                messagebox.showwarning(
+                    "Schedule",
+                    "Times look like 11:00, 9:30 pm or 14:15.",
+                    parent=window
+                )
+
+                return
+
+            if end <= start:
+
+                messagebox.showwarning(
+                    "Schedule",
+                    "The block has to end after it starts.",
+                    parent=window
+                )
+
+                return
+
+            if not chosen:
+
+                messagebox.showwarning(
+                    "Schedule", "Pick at least one day.", parent=window
+                )
+
+                return
+
+            if editing:
+
+                self.db.update_schedule(
+                    block["id"], name, start, end, chosen, remind["value"]
+                )
+
+            else:
+
+                self.db.add_schedule(
+                    name, start, end, chosen, remind["value"]
+                )
+
+            # Show the day this block was made for.
+            if self._sched_day not in chosen:
+                self._sched_day = min(chosen)
+
+            window.destroy()
+
+            if self.current_page == "Schedule":
+                self.show_page("Schedule")
+
+        save_button = self.make_button(
+            buttons,
+            "Save changes" if editing else "Add block",
+            save,
+            width=13
+        )
+
+        save_button.configure(selected=True)
+        save_button.pack(side="right")
+
+        self.make_button(
+            buttons, "Cancel", window.destroy, width=9
+        ).pack(side="right", padx=(0, 10))
+
+        title_entry.focus_set()
+
+        window.bind("<Return>", lambda e: save())
+
+    def delete_schedule_confirm(self, block):
+
+        if not messagebox.askyesno(
+            "Delete block",
+            f'Delete "{block["title"]}" from your schedule?'
+        ):
+            return
+
+        self.db.delete_schedule(block["id"])
+
+        self.show_page("Schedule")
+
+    def _schedule_tick(self):
+        """Pops up a reminder when a block is about to start."""
+
+        try:
+
+            if self.initialized and self.db and not self._quitting:
+
+                now = datetime.now()
+
+                minute = now.hour * 60 + now.minute
+
+                stamp = now.strftime("%Y-%m-%d")
+
+                if getattr(self, "_sched_stamp", "") != stamp:
+
+                    self._sched_stamp = stamp
+                    self._sched_fired = set()
+
+                due = []
+
+                for block in self.db.get_schedule():
+
+                    if block["remind_before"] < 0:
+                        continue
+
+                    if str(now.weekday()) not in block["days"].split(","):
+                        continue
+
+                    trigger = block["start_min"] - block["remind_before"]
+
+                    # A reminder that is more than 10 minutes late
+                    # (the app was closed) is skipped, not shown late.
+                    if (
+                        trigger <= minute < min(trigger + 10, block["end_min"])
+                        and block["id"] not in self._sched_fired
+                    ):
+
+                        self._sched_fired.add(block["id"])
+
+                        due.append(block)
+
+                if due:
+                    self.show_schedule_alarm(due)
+
+        except Exception:
+            pass
+
+        finally:
+
+            if not self._quitting:
+                self.after(15000, self._schedule_tick)
+
+    def show_schedule_alarm(self, blocks):
+        """Popup for a block that is starting: a short beep, stays on
+        top until dealt with, even if the app is hidden in the tray."""
+
+        old = getattr(self, "_sched_popup", None)
+
+        if old is not None:
+
+            try:
+                old.destroy()
+            except Exception:
+                pass
+
+        shown = list(blocks[:4])
+
+        extra = len(blocks) - len(shown)
+
+        win = tk.Toplevel(self)
+
+        self._sched_popup = win
+
+        self._attach_alarm(win, False)
+
+        win.title("Studestics schedule")
+        win.configure(bg=BG)
+        win.attributes("-topmost", True)
+
+        self.center_window(
+            win, 480, 215 + 52 * len(shown) + (24 if extra else 0)
+        )
+
+        now = datetime.now()
+
+        minute = now.hour * 60 + now.minute
+
+        first = shown[0]
+
+        if len(blocks) == 1 and first["start_min"] > minute:
+
+            gap = first["start_min"] - minute
+
+            subtitle = (
+                f"Starts in {gap} minute" + ("" if gap == 1 else "s")
+            )
+
+        elif len(blocks) == 1:
+
+            subtitle = "It's time."
+
+        else:
+
+            subtitle = f"{len(blocks)} blocks are starting."
+
+        if len(blocks) == 1:
+
+            heading = first["title"]
+
+            if len(heading) > 26:
+                heading = heading[:25] + "…"
+
+        else:
+
+            heading = "Up next"
+
+        tk.Label(
+            win,
+            text=heading,
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 26, "bold")
+        ).pack(anchor="w", padx=28, pady=(24, 2))
+
+        tk.Label(
+            win,
+            text=subtitle,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10)
+        ).pack(anchor="w", padx=28, pady=(0, 14))
+
+        bar = tk.Frame(win, bg=BG)
+
+        bar.pack(side="bottom", fill="x", padx=28, pady=20)
+
+        rows = tk.Frame(win, bg=BG)
+
+        rows.pack(fill="x", padx=28)
+
+        for block in shown:
+
+            row = tk.Frame(rows, bg=PANEL_2)
+
+            row.pack(fill="x", pady=3)
+
+            tk.Label(
+                row,
+                text=(
+                    f"{format_clock(block['start_min'])} – "
+                    f"{format_clock(block['end_min'])}"
+                ),
+                bg=PANEL_2,
+                fg=PURPLE_HOVER,
+                font=("Segoe UI", 10, "bold")
+            ).pack(side="left", padx=(14, 10), pady=12)
+
+            if len(blocks) > 1:
+
+                name = block["title"]
+
+                if len(name) > 30:
+                    name = name[:29] + "…"
+
+                tk.Label(
+                    row,
+                    text=name,
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    font=("Segoe UI", 10, "bold"),
+                    anchor="w"
+                ).pack(side="left", fill="x", expand=True)
+
+        if extra:
+
+            tk.Label(
+                win,
+                text=f"+ {extra} more",
+                bg=BG,
+                fg=MUTED_2,
+                font=("Segoe UI", 9)
+            ).pack(anchor="w", padx=30, pady=(4, 0))
+
+        def snooze():
+
+            win.destroy()
+
+            self.after(
+                5 * 60 * 1000,
+                lambda b=list(blocks): self.show_schedule_alarm(b)
+            )
+
+        def open_app():
+
+            self.restore_window()
+
+            self._sched_day = datetime.now().weekday()
+
+            self.show_page("Schedule")
+
+            win.destroy()
+
+        centred = tk.Frame(bar, bg=BG)
+
+        centred.pack()
+
+        self.make_button(centred, "Open app", open_app, width=9).pack(
+            side="left"
+        )
+
+        self.make_button(centred, "Snooze 5 min", snooze, width=12).pack(
+            side="left", padx=8
+        )
+
+        self.make_button(centred, "Dismiss", win.destroy, width=9).pack(
+            side="left"
+        )
 
     # ========================================================
     # FOCUS MODE
@@ -24146,6 +25367,7 @@ class StudesticsApp(tk.Tk):
     def start_reminders(self):
 
         self.after(20000, self._reminder_tick)
+        self.after(15000, self._schedule_tick)
 
     def _effective_interval(self, task):
         """The reminder gap for a task, shorter as its deadline nears."""
