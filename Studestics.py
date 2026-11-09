@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -2961,6 +2961,14 @@ class Database:
 
             self.connection.commit()
 
+    def delete_all_schedule(self):
+
+        with self.lock:
+
+            self.connection.execute("DELETE FROM schedule")
+
+            self.connection.commit()
+
     def delete_schedule(self, block_id):
 
         with self.lock:
@@ -3435,6 +3443,172 @@ EMOJI_CATEGORIES = [
     ("💡", "Objects", "💡 🔦 💻 🖥️ ⌨️ 🖱️ 📱 ☎️ 📷 📺 🔋 🔌 💾 💿 📧 ✉️ 📦 🔑 🔒 🔓 🔨 🔧 ⚙️ 🧲 💰 💳 💎 ⚖️ 🧰 🔔 🔕 📢 🔍 🔎 📁 📂 🗂️ 🗑️ 🧹 📚 📖 📝 ✏️ 🖊️ 📌 📎 📅 📆 ⏰ ⏳ ⌛ 📊 📈 📉 🎓 🏫 💼 🧪 🔬 🔭 📡 🧬 🪑 🛒"),
     ("❤️", "Symbols", "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💯 ✨ ⭐ 🌟 💫 ⚡ 🔥 💥 ✅ ❌ ❗ ❓ ⚠️ 🚫 ✔️ ➕ ➖ ➡️ ⬅️ ⬆️ ⬇️ 🔄 ♻️ 🌈 ☀️ 🌙 ☁️ ⛅ 🌧️ ❄️ 🌊 🚀 ✈️ 🚗 🚲 🏠 🌍 🗺️ 🧭 ⛰️ 🏖️ 🌋 ⛱️ 🎡 🕐 ♾️ ©️ ™️ 🆗 🆒 🆕 🔝 💤 🎵 🎶"),
 ]
+
+EMOJI_SHORTCODES_TEXT = """
+smile 😄|grin 😁|grinning 😀|smiley 😃|laughing 😆|sweat_smile 😅|rofl 🤣
+joy 😂|slight_smile 🙂|upside_down 🙃|wink 😉|blush 😊|innocent 😇
+smiling_hearts 🥰|heart_eyes 😍|star_struck 🤩|kissing_heart 😘|kiss 😘
+yum 😋|tongue 😛|wink_tongue 😜|zany 🤪|money_mouth 🤑|hug 🤗|shush 🤫
+thinking 🤔|zipper_mouth 🤐|raised_eyebrow 🤨|neutral 😐|expressionless 😑
+no_mouth 😶|smirk 😏|unamused 😒|rolling_eyes 🙄|grimacing 😬|lying 🤥
+relieved 😌|pensive 😔|sleepy 😪|drooling 🤤|sleeping 😴|mask 😷|sick 🤒
+nauseated 🤢|vomit 🤮|sneeze 🤧|hot 🥵|cold 🥶|woozy 🥴|dizzy_face 😵
+exploding_head 🤯|cowboy 🤠|partying 🥳|sunglasses 😎|cool 😎|nerd 🤓
+monocle 🧐|confused 😕|worried 😟|frown 🙁|open_mouth 😮|hushed 😯
+astonished 😲|flushed 😳|pleading 🥺|fearful 😨|cold_sweat 😰|sad_relieved 😥
+cry 😢|sob 😭|sobbing 😭|scream 😱|confounded 😖|persevere 😣|disappointed 😞
+sweat 😓|weary 😩|tired 😫|yawn 🥱|triumph 😤|angry 😠|rage 😡|cursing 🤬
+imp 😈|skull 💀|poop 💩|clown 🤡|ghost 👻|alien 👽|robot 🤖
+see_no_evil 🙈|hear_no_evil 🙉|speak_no_evil 🙊|wave 👋|raised_hand ✋
+ok_hand 👌|pinched 🤏|victory ✌️|crossed_fingers 🤞|love_you 🤟|metal 🤘
+call_me 🤙|point_left 👈|point_right 👉|point_up 👆|point_down 👇
+thumbsup 👍|+1 👍|thumbsdown 👎|-1 👎|fist 👊|clap 👏|raised_hands 🙌
+handshake 🤝|pray 🙏|writing ✍️|muscle 💪|brain 🧠|eyes 👀|tongue_out 👅
+shrug 🤷|facepalm 🤦|bow 🙇|heart ❤️|red_heart ❤️|orange_heart 🧡
+yellow_heart 💛|green_heart 💚|blue_heart 💙|purple_heart 💜|black_heart 🖤
+white_heart 🤍|broken_heart 💔|sparkling_heart 💖|two_hearts 💕|100 💯
+hundred 💯|fire 🔥|sparkles ✨|star ⭐|glowing_star 🌟|boom 💥|zap ⚡
+check ✅|x ❌|warning ⚠️|question ❓|exclamation ❗|rocket 🚀|rainbow 🌈
+sun ☀️|moon 🌙|cloud ☁️|rain 🌧️|snowflake ❄️|ocean 🌊|tada 🎉|party 🎉
+confetti 🎊|balloon 🎈|gift 🎁|trophy 🏆|medal 🏅|first_place 🥇|soccer ⚽
+basketball 🏀|game 🎮|dice 🎲|puzzle 🧩|art 🎨|music 🎵|notes 🎶
+headphones 🎧|guitar 🎸|microphone 🎤|dog 🐶|cat 🐱|mouse 🐭|rabbit 🐰
+fox 🦊|bear 🐻|panda 🐼|tiger 🐯|lion 🦁|cow 🐮|pig 🐷|frog 🐸|monkey 🐵
+chicken 🐔|penguin 🐧|owl 🦉|bee 🐝|butterfly 🦋|snail 🐌|turtle 🐢
+snake 🐍|octopus 🐙|whale 🐳|dolphin 🐬|shark 🦈|unicorn 🦄|cactus 🌵
+tree 🌳|seedling 🌱|clover 🍀|rose 🌹|sunflower 🌻|tulip 🌷
+cherry_blossom 🌸|mushroom 🍄|apple 🍎|banana 🍌|watermelon 🍉|grapes 🍇
+strawberry 🍓|cherries 🍒|peach 🍑|pineapple 🍍|avocado 🥑|broccoli 🥦
+carrot 🥕|corn 🌽|bread 🍞|cheese 🧀|egg 🥚|pancakes 🥞|bacon 🥓
+chicken_leg 🍗|burger 🍔|fries 🍟|pizza 🍕|hotdog 🌭|taco 🌮|ramen 🍜
+noodles 🍜|sushi 🍣|ice_cream 🍦|donut 🍩|cookie 🍪|cake 🎂|cupcake 🧁
+chocolate 🍫|candy 🍬|popcorn 🍿|coffee ☕|tea 🍵|milk 🥛|beer 🍺|wine 🍷
+cocktail 🍹|bulb 💡|idea 💡|laptop 💻|computer 🖥️|keyboard ⌨️|phone 📱
+camera 📷|tv 📺|battery 🔋|plug 🔌|email 📧|package 📦|key 🔑|lock 🔒
+unlock 🔓|hammer 🔨|wrench 🔧|gear ⚙️|money 💰|credit_card 💳|gem 💎
+bell 🔔|mute 🔕|megaphone 📢|mag 🔍|folder 📁|books 📚|book 📖|memo 📝
+pencil ✏️|pen 🖊️|pushpin 📌|paperclip 📎|calendar 📅|alarm_clock ⏰
+hourglass ⏳|chart 📊|chart_up 📈|chart_down 📉|graduation_cap 🎓
+school 🏫|briefcase 💼|test_tube 🧪|microscope 🔬|telescope 🔭|dna 🧬
+globe 🌍|map 🗺️|compass 🧭|mountain ⛰️|beach 🏖️|house 🏠|car 🚗|bike 🚲
+airplane ✈️|clock 🕐|zzz 💤
+love ❤️|hearts 💕|love_heart 💗|thumbs_up 👍|thumbs_down 👎|laugh 😂|lol 😂
+lmao 🤣|happy 😊|sad 😢|crying 😭|ok 👌|hi 👋|bye 👋|lit 🔥|thanks 🙏
+thank_you 🙏|please 🥺|oof 😬|rip 💀|dead 💀|mindblown 🤯|think 🤔|sus 🤨
+cheers 🥂|hungry 🍽️|study 📚|sleep 😴|work 💼|good_luck 🤞|congrats 🎉
+"""
+
+EMOJI_SHORTCODES = {}
+
+for _chunk in EMOJI_SHORTCODES_TEXT.replace("\n", "|").split("|"):
+
+    _bits = _chunk.strip().split(" ", 1)
+
+    if len(_bits) == 2 and _bits[1].strip():
+        EMOJI_SHORTCODES[_bits[0].lower()] = _bits[1].strip()
+
+
+def _add_official_emoji_names():
+    """Every single-character emoji also gets its official Unicode name
+    as a shortcode (growing_heart, face_with_tears_of_joy, ...), on top
+    of the short hand-written ones above."""
+
+    import unicodedata
+
+    ranges = (
+        (0x1F300, 0x1F64F), (0x1F680, 0x1F6C5),
+        (0x1F910, 0x1F9FF), (0x1FA70, 0x1FAFF),
+        (0x2600, 0x2604), (0x260E, 0x260E), (0x2614, 0x2615),
+        (0x2648, 0x2653), (0x267F, 0x267F), (0x2693, 0x2693),
+        (0x26A1, 0x26A1), (0x26BD, 0x26BE), (0x26C4, 0x26C5),
+        (0x26D4, 0x26D4), (0x26EA, 0x26EA), (0x2705, 0x2705),
+        (0x2728, 0x2728), (0x274C, 0x274C), (0x2764, 0x2764),
+        (0x2B50, 0x2B50)
+    )
+
+    have = set(EMOJI_SHORTCODES.values())
+
+    for low, high in ranges:
+
+        for code in range(low, high + 1):
+
+            try:
+                name = unicodedata.name(chr(code))
+            except ValueError:
+                continue
+
+            if "MODIFIER" in name:
+                continue
+
+            key = name.lower().replace(" ", "_").replace("-", "_")
+
+            char = chr(code)
+
+            if code < 0x1F000:
+                char += "\uFE0F"
+
+            if key not in EMOJI_SHORTCODES and (
+                char not in have or len(key) < 40
+            ):
+                EMOJI_SHORTCODES[key] = char
+
+
+try:
+    _add_official_emoji_names()
+except Exception:
+    pass
+
+EMOJI_NAMES = list(EMOJI_SHORTCODES)
+
+
+def emoji_matches(query, limit=6):
+    """Shortcode names that best fit what was typed after the colon:
+    names starting with it, then names containing it, then close
+    spellings. One row per emoji."""
+
+    import difflib
+
+    query = query.lower()
+
+    starts = sorted(
+        (n for n in EMOJI_NAMES if n.startswith(query)),
+        key=lambda n: (len(n), n)
+    )
+
+    inside = sorted(
+        (n for n in EMOJI_NAMES if query in n and n not in starts),
+        key=lambda n: (len(n), n)
+    )
+
+    close = []
+
+    if len(starts) + len(inside) < limit:
+
+        close = [
+            n for n in difflib.get_close_matches(
+                query, EMOJI_NAMES, n=limit, cutoff=0.72
+            )
+            if n not in starts and n not in inside
+        ]
+
+    seen, out = set(), []
+
+    for name in starts + inside + close:
+
+        char = EMOJI_SHORTCODES[name]
+
+        if char in seen:
+            continue
+
+        seen.add(char)
+
+        out.append(name)
+
+        if len(out) >= limit:
+            break
+
+    return out
+
 
 _EMOJI_FONT_PATHS = (
     "C:/Windows/Fonts/seguiemj.ttf",
@@ -4406,6 +4580,7 @@ class StudesticsApp(tk.Tk):
 
         self.bind("<F11>", self.toggle_fullscreen)
         self.bind_all("<KeyPress>", self._zen_keys, add="+")
+        self._install_text_shortcuts()
         self.bind("<Escape>", self._leave_fullscreen, add="+")
 
         self._music_watch()
@@ -8692,8 +8867,10 @@ class StudesticsApp(tk.Tk):
             pady=(5, 12)
         )
 
+        self.emoji_attach(description)
+
         if editing:
-            description.insert("1.0", task["description"] or "")
+            self.emoji_write(description, task["description"] or "")
 
         tk.Label(
             form,
@@ -9048,11 +9225,7 @@ class StudesticsApp(tk.Tk):
 
                 return
 
-            task_description = (
-                description
-                .get("1.0", "end-1c")
-                .strip()
-            )
+            task_description = self.emoji_read(description).strip()
 
             remind_text = (
                 remind_entry.get().strip()
@@ -10398,8 +10571,10 @@ class StudesticsApp(tk.Tk):
             pady=(5, 12)
         )
 
+        self.emoji_attach(description)
+
         if editing:
-            description.insert("1.0", goal["description"] or "")
+            self.emoji_write(description, goal["description"] or "")
 
         selected_path = tk.StringVar(value="")
         selected_name = tk.StringVar(value="No image selected")
@@ -10476,7 +10651,7 @@ class StudesticsApp(tk.Tk):
 
                 return
 
-            text = description.get("1.0", "end-1c").strip()
+            text = self.emoji_read(description).strip()
 
             if editing:
 
@@ -11205,7 +11380,9 @@ class StudesticsApp(tk.Tk):
 
         editor.pack(fill="both", expand=True)
 
-        editor.insert("1.0", self._note_text)
+        self.emoji_attach(editor)
+
+        self.emoji_write(editor, self._note_text)
         editor.edit_reset()
         editor.edit_modified(False)
 
@@ -11271,7 +11448,7 @@ class StudesticsApp(tk.Tk):
 
             editor.edit_modified(False)
 
-            self._note_text = editor.get("1.0", "end-1c")
+            self._note_text = self.emoji_read(editor)
             self._note_dirty = True
 
             file_label()
@@ -11309,7 +11486,7 @@ class StudesticsApp(tk.Tk):
         def set_content(text, path, dirty):
 
             editor.delete("1.0", "end")
-            editor.insert("1.0", text)
+            self.emoji_write(editor, text)
             editor.edit_reset()
             editor.edit_modified(False)
             editor.mark_set("insert", "1.0")
@@ -11328,7 +11505,7 @@ class StudesticsApp(tk.Tk):
             try:
 
                 with open(path, "w", encoding="utf-8", newline="") as handle:
-                    handle.write(editor.get("1.0", "end-1c"))
+                    handle.write(self.emoji_read(editor))
 
             except Exception as exc:
 
@@ -11340,7 +11517,7 @@ class StudesticsApp(tk.Tk):
 
                 return False
 
-            self._note_text = editor.get("1.0", "end-1c")
+            self._note_text = self.emoji_read(editor)
             self._note_path = path
             self._note_dirty = False
 
@@ -11453,11 +11630,11 @@ class StudesticsApp(tk.Tk):
         def quiz_me():
 
             try:
-                chosen = editor.get("sel.first", "sel.last")
+                chosen = self.emoji_read(editor, "sel.first", "sel.last")
             except tk.TclError:
                 chosen = ""
 
-            self.start_quiz(chosen or editor.get("1.0", "end-1c"))
+            self.start_quiz(chosen or self.emoji_read(editor))
 
         quiz_button = self.make_button(
             header, "Quiz me", quiz_me, width=11
@@ -11486,7 +11663,7 @@ class StudesticsApp(tk.Tk):
         ).pack(side="right", padx=(0, 12))
 
         editor.bind("<<Modified>>", on_modified)
-        editor.bind("<KeyRelease>", update_status)
+        editor.bind("<KeyRelease>", update_status, add="+")
         editor.bind("<ButtonRelease-1>", update_status)
         editor.bind("<Control-s>", save)
         editor.bind("<Control-S>", save_as)
@@ -11532,6 +11709,15 @@ class StudesticsApp(tk.Tk):
         self.make_button(
             top, "+ New block", lambda: self.schedule_dialog()
         ).pack(side="left")
+
+        if self.db.get_schedule():
+
+            self.make_button(
+                top,
+                "Delete all blocks",
+                self.delete_all_schedule_confirm,
+                active=DANGER_HOVER
+            ).pack(side="left", padx=(8, 0))
 
         tabs = tk.Frame(top, bg=BG)
 
@@ -11865,82 +12051,105 @@ class StudesticsApp(tk.Tk):
 
         def paint_rail(rail, first, last, state, frac, t):
             """Order-tracker style rail: a dot per block joined by a
-            line that fills green as the day goes by."""
+            line that fills green as the day goes by. Drawn with
+            Pillow at 4x so the circles are smooth."""
 
             rail.update_idletasks()
 
             h = rail.winfo_height()
 
+            w = 38
+
             if h < 4:
                 return
 
-            x = 19
+            k = 4
+
+            img = Image.new("RGBA", (w * k, h * k), _hex_rgb(PANEL) + (255,))
+
+            d = ImageDraw.Draw(img)
+
+            x = w / 2
 
             mid = h / 2
 
-            rail.delete("all")
+            grey = _hex_rgb(BORDER)
 
-            grey = BORDER
+            green = _hex_rgb(GREEN)
+
+            purple = _hex_rgb(PURPLE)
+
+            back = _hex_rgb(PANEL)
 
             def line(y0, y1, color):
 
-                if y1 > y0:
+                if y1 - y0 > 0.5:
 
-                    rail.create_line(
-                        x, y0, x, y1, fill=color, width=3,
-                        capstyle="round"
+                    d.line(
+                        [(x * k, y0 * k), (x * k, y1 * k)],
+                        fill=color, width=3 * k
                     )
 
-            top_done = state in ("done", "now")
+            def disc(r, fill, outline=None, width=0):
+
+                box = [
+                    (x - r) * k, (mid - r) * k,
+                    (x + r) * k, (mid + r) * k
+                ]
+
+                d.ellipse(
+                    box, fill=fill,
+                    outline=outline, width=int(width * k)
+                )
 
             if not first:
 
                 line(0, mid, grey)
 
-                if top_done:
-                    line(0, mid * t, GREEN)
+                if state in ("done", "now"):
+                    line(0, mid * t, green)
 
             if not last:
 
                 line(mid, h, grey)
 
                 if state == "done":
-                    line(mid, mid + (h - mid) * t, GREEN)
+                    line(mid, mid + (h - mid) * t, green)
 
                 elif state == "now":
-                    line(mid, mid + (h - mid) * frac * t, GREEN)
+                    line(mid, mid + (h - mid) * frac * t, green)
 
             if state == "done":
 
-                rail.create_oval(
-                    x - 11, mid - 11, x + 11, mid + 11,
-                    fill=GREEN, outline=GREEN
-                )
+                disc(11, green)
 
-                rail.create_line(
-                    x - 5, mid, x - 1.5, mid + 4, x + 5, mid - 4,
-                    fill="#07140B", width=2.5, capstyle="round",
-                    joinstyle="round"
+                d.line(
+                    [
+                        ((x - 5) * k, mid * k),
+                        ((x - 1.5) * k, (mid + 4) * k),
+                        ((x + 5) * k, (mid - 4) * k)
+                    ],
+                    fill=(7, 20, 11), width=int(2.6 * k), joint="curve"
                 )
 
             elif state == "now":
 
-                rail.create_oval(
-                    x - 11, mid - 11, x + 11, mid + 11,
-                    fill=PANEL, outline=GREEN, width=3
-                )
-
-                rail.create_oval(
-                    x - 5, mid - 5, x + 5, mid + 5,
-                    fill=GREEN, outline=GREEN
-                )
+                disc(11, back, green, 3)
+                disc(5, green)
 
             else:
 
-                rail.create_oval(
-                    x - 10, mid - 10, x + 10, mid + 10,
-                    fill=PANEL, outline=PURPLE, width=3
-                )
+                disc(10.5, back, purple, 3)
+
+            img = img.resize((w, h), Image.LANCZOS)
+
+            photo = ImageTk.PhotoImage(img)
+
+            rail.delete("all")
+
+            rail.create_image(0, 0, image=photo, anchor="nw")
+
+            rail._photo = photo
 
         def pick(index):
 
@@ -12127,6 +12336,100 @@ class StudesticsApp(tk.Tk):
 
             return "break"
 
+        def word_back(event):
+
+            w = event.widget
+
+            if w.selection_present():
+
+                w.delete("sel.first", "sel.last")
+
+                return "break"
+
+            end = w.index("insert")
+
+            text = w.get()
+
+            start = end
+
+            while start > 0 and text[start - 1].isspace():
+                start -= 1
+
+            while start > 0 and not text[start - 1].isspace():
+                start -= 1
+
+            w.delete(start, end)
+
+            return "break"
+
+        def word_forward(event):
+
+            w = event.widget
+
+            if w.selection_present():
+
+                w.delete("sel.first", "sel.last")
+
+                return "break"
+
+            start = w.index("insert")
+
+            text = w.get()
+
+            end = start
+
+            while end < len(text) and not text[end].isspace():
+                end += 1
+
+            while end < len(text) and text[end].isspace():
+                end += 1
+
+            w.delete(start, end)
+
+            return "break"
+
+        def select_all(event):
+
+            event.widget.select_range(0, "end")
+
+            event.widget.icursor("end")
+
+            return "break"
+
+        for entry in (title_entry, start_entry, end_entry):
+
+            entry.bind("<Control-BackSpace>", word_back)
+            entry.bind("<Control-Delete>", word_forward)
+            entry.bind("<Control-a>", select_all)
+            entry.bind("<Control-A>", select_all)
+
+        def flip_meridiem(event):
+
+            w = event.widget
+
+            value = parse_clock(w.get())
+
+            if value is None:
+                return
+
+            text = w.get().strip()
+
+            spot = w.index("@%d" % event.x)
+
+            if len(text) >= 2 and text[-2:].upper() in ("AM", "PM") \
+                    and spot >= len(w.get()) - 2:
+
+                w.delete(0, "end")
+                w.insert(0, format_clock((value + 720) % 1440))
+
+                w.focus_set()
+
+                return "break"
+
+        for entry in (start_entry, end_entry):
+
+            entry.bind("<Button-1>", flip_meridiem, add="+")
+
         for entry in (start_entry, end_entry):
 
             entry.bind("<FocusOut>", lambda e, w=entry: tidy(w))
@@ -12139,7 +12442,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             times,
-            text="Arrow keys or wheel: ±15 min",
+            text="Click AM / PM to flip  ·  ↑ ↓ ±15 min",
             bg=BG,
             fg=MUTED_2,
             font=("Segoe UI", 9)
@@ -12331,6 +12634,24 @@ class StudesticsApp(tk.Tk):
         title_entry.focus_set()
 
         window.bind("<Return>", lambda e: save())
+
+    def delete_all_schedule_confirm(self):
+
+        count = len(self.db.get_schedule())
+
+        if not count:
+            return
+
+        if not messagebox.askyesno(
+            "Delete all blocks",
+            f"Delete all {count} block" + ("" if count == 1 else "s")
+            + " on every day of your schedule? This can't be undone."
+        ):
+            return
+
+        self.db.delete_all_schedule()
+
+        self.show_page("Schedule")
 
     def delete_schedule_confirm(self, block):
 
@@ -17082,8 +17403,8 @@ class StudesticsApp(tk.Tk):
 
         self.page_header(
             "AI Chat",
-            "Your study assistant, powered by Gemini. New: type "
-            "/notes and a topic to save notes to your Notes tab."
+            "Your study assistant, powered by Gemini. Type /notes "
+            "for notes, or /schedule to plan your days."
         )
 
         outer = tk.Frame(
@@ -18816,6 +19137,10 @@ class StudesticsApp(tk.Tk):
         (
             "/quiz", "topic or file",
             "Quiz yourself on a topic, or on a file you attached"
+        ),
+        (
+            "/schedule", "what to plan",
+            "Let the AI fill your Schedule tab"
         )
     ]
 
@@ -18841,6 +19166,382 @@ class StudesticsApp(tk.Tk):
                 menu.place_forget()
             except Exception:
                 pass
+
+        self._hide_emoji_menu()
+
+    # ---- emoji in other multi-line boxes (Notes, descriptions) -----
+
+    def emoji_attach(self, w):
+        """Give a Text box the :name: menu and real colour emoji. Read
+        it back with emoji_read and fill it with emoji_write."""
+
+        w._emoji_photos = {}
+        w._emoji_chars = {}
+
+        w.bind(
+            "<KeyRelease>",
+            lambda e: self._emoji_typed(w, e), add="+"
+        )
+
+        w.bind("<FocusOut>", lambda e: self._hide_emoji_menu(), add="+")
+
+        def mine():
+
+            return self._emoji_visible() and self._emoji_w is w
+
+        for key, code in (
+            ("<Up>", -1), ("<Down>", 1), ("<Tab>", 0), ("<Escape>", 9),
+            ("<Return>", 0)
+        ):
+
+            w.bind(
+                key,
+                lambda e, c=code: self._emoji_key(c) if mine() else None
+            )
+
+    def _emoji_typed(self, w, event):
+
+        if event.keysym in (
+            "Up", "Down", "Tab", "Escape", "Return", "Shift_L",
+            "Shift_R", "Control_L", "Control_R"
+        ):
+            return
+
+        try:
+            self._update_emoji_menu(w)
+        except Exception:
+            pass
+
+    def _emoji_insert(self, w, char):
+
+        if w is getattr(self, "chat_input", None):
+            self._put_emoji_image(char)
+            return
+
+        pil = emoji_image(char, 20)
+
+        if pil is None:
+            w.insert("insert", char)
+            return
+
+        photo = ImageTk.PhotoImage(pil)
+
+        name = w.image_create("insert", image=photo, padx=1)
+
+        w._emoji_photos[name] = photo
+        w._emoji_chars[name] = char
+
+    def emoji_read(self, w, start="1.0", end="end-1c"):
+        """The box's text with each emoji image turned back into its
+        real character."""
+
+        try:
+            items = w.dump(start, end, text=True, image=True)
+        except Exception:
+            return w.get(start, end)
+
+        out = []
+
+        for kind, value, _index in items:
+
+            if kind == "text":
+
+                try:
+                    value = value.encode(
+                        "utf-16", "surrogatepass"
+                    ).decode("utf-16", "replace")
+                except Exception:
+                    pass
+
+                out.append(value)
+
+            elif kind == "image":
+
+                out.append(getattr(w, "_emoji_chars", {}).get(value, ""))
+
+        return "".join(out)
+
+    def emoji_write(self, w, text, index="1.0"):
+        """Insert text, drawing any emoji in it as images."""
+
+        w.mark_set("_emoji_at", index)
+
+        w.mark_gravity("_emoji_at", "right")
+
+        for part, is_emoji in emoji_segments(text):
+
+            if is_emoji:
+
+                keep = w.index("insert")
+
+                w.mark_set("insert", "_emoji_at")
+
+                self._emoji_insert(w, part)
+
+                w.mark_set("_emoji_at", "insert")
+
+                w.mark_set("insert", keep)
+
+            elif part:
+
+                w.insert("_emoji_at", part)
+
+    # ---- :name: emoji suggestions (AI Chat) --------------------
+
+    def _emoji_visible(self):
+
+        menu = getattr(self, "_emoji_menu", None)
+
+        try:
+            return bool(
+                menu is not None
+                and menu.winfo_exists()
+                and menu.winfo_ismapped()
+            )
+        except Exception:
+            return False
+
+    def _hide_emoji_menu(self):
+
+        menu = getattr(self, "_emoji_menu", None)
+
+        if menu is not None:
+            try:
+                menu.place_forget()
+            except Exception:
+                pass
+
+    def _update_emoji_menu(self, w=None):
+        """Typing :yu shows matching emoji (closest first); typing the
+        closing colon of a known name, like :yum:, swaps it for the
+        emoji straight away."""
+
+        w = w or getattr(self, "chat_input", None)
+
+        self._emoji_w = w
+
+        if w is getattr(self, "chat_input", None) and getattr(
+                self, "chat_placeholder_active", False
+        ):
+            self._hide_emoji_menu()
+            return
+
+        before = w.get("1.0", "insert")
+
+        done = re.search(r"(?:^|\s):([A-Za-z0-9_+\-]+):$", before)
+
+        if done and done.group(1).lower() in EMOJI_SHORTCODES:
+
+            name = done.group(1)
+
+            start = w.search(
+                ":" + name + ":", "insert", "1.0",
+                backwards=True, nocase=True
+            )
+
+            if start:
+
+                w.delete(start, "insert")
+
+                self._emoji_insert(w, EMOJI_SHORTCODES[name.lower()])
+
+                self._hide_emoji_menu()
+
+                return
+
+        typing = re.search(r"(?:^|\s):([A-Za-z0-9_+\-]{1,})$", before)
+
+        names = emoji_matches(typing.group(1)) if typing else []
+
+        if not names:
+            self._hide_emoji_menu()
+            return
+
+        if (
+            names != getattr(self, "_emoji_names", [])
+            or not self._emoji_visible()
+        ):
+            self._emoji_index = 0
+
+        self._emoji_names = names
+
+        self._emoji_query = typing.group(1)
+
+        self._draw_emoji_menu()
+
+    def _draw_emoji_menu(self):
+
+        menu = getattr(self, "_emoji_menu", None)
+
+        try:
+            alive = menu is not None and menu.winfo_exists()
+        except Exception:
+            alive = False
+
+        if not alive:
+
+            menu = tk.Frame(
+                self,
+                bg=PANEL_2,
+                highlightthickness=1,
+                highlightbackground=BORDER
+            )
+
+            self._emoji_menu = menu
+
+        for child in menu.winfo_children():
+            child.destroy()
+
+        self._emoji_rows = []
+
+        self._emoji_menu_photos = []
+
+        for i, name in enumerate(self._emoji_names):
+
+            char = EMOJI_SHORTCODES[name]
+
+            row = tk.Frame(menu, bg=PANEL_2, cursor="hand2")
+
+            row.pack(fill="x")
+
+            parts = [row]
+
+            pil = emoji_image(char, 22)
+
+            if pil is not None:
+
+                photo = ImageTk.PhotoImage(pil)
+
+                self._emoji_menu_photos.append(photo)
+
+                icon = tk.Label(row, image=photo, bg=PANEL_2)
+
+            else:
+
+                icon = tk.Label(
+                    row, text=char, bg=PANEL_2, fg=TEXT,
+                    font=("Segoe UI", 12)
+                )
+
+            icon.pack(side="left", padx=(12, 8), pady=5)
+
+            label = tk.Label(
+                row, text=f":{name}:", bg=PANEL_2, fg=TEXT,
+                font=("Segoe UI", 10)
+            )
+
+            label.pack(side="left", pady=5)
+
+            parts += [icon, label]
+
+            self._emoji_rows.append(parts)
+
+            for part in parts:
+
+                part.bind(
+                    "<Button-1>", lambda e, n=i: self._emoji_pick(n)
+                )
+
+                part.bind(
+                    "<Enter>", lambda e, n=i: self._emoji_hover(n)
+                )
+
+        self._paint_emoji_rows()
+
+        w = self._emoji_w
+
+        if w is getattr(self, "chat_input", None):
+
+            menu.place(
+                in_=w,
+                x=0,
+                y=-8,
+                anchor="sw",
+                width=max(260, min(w.winfo_width(), 380))
+            )
+
+        else:
+
+            menu.update_idletasks()
+
+            box = w.bbox("insert") or (10, 10, 0, 18)
+
+            height = menu.winfo_reqheight()
+
+            x = max(0, min(box[0], max(0, w.winfo_width() - 300)))
+
+            y = box[1] + box[3] + 4
+
+            if y + height > w.winfo_height():
+                y = max(0, box[1] - height - 4)
+
+            menu.place(in_=w, x=x, y=y, anchor="nw", width=280)
+
+        menu.lift()
+
+    def _paint_emoji_rows(self):
+
+        for i, parts in enumerate(getattr(self, "_emoji_rows", [])):
+
+            color = BORDER if i == self._emoji_index else PANEL_2
+
+            for part in parts:
+                try:
+                    part.configure(bg=color)
+                except Exception:
+                    pass
+
+    def _emoji_hover(self, index):
+
+        if index != self._emoji_index:
+            self._emoji_index = index
+            self._paint_emoji_rows()
+
+    def _emoji_pick(self, index=None):
+
+        names = getattr(self, "_emoji_names", [])
+
+        if not names:
+            return
+
+        if index is None:
+            index = self._emoji_index
+
+        name = names[min(index, len(names) - 1)]
+
+        query = getattr(self, "_emoji_query", "")
+
+        self._hide_emoji_menu()
+
+        w = getattr(self, "_emoji_w", None)
+
+        start = w.search(
+            ":" + query, "insert", "1.0", backwards=True, nocase=True
+        )
+
+        if start:
+            w.delete(start, "insert")
+
+        self._emoji_insert(w, EMOJI_SHORTCODES[name])
+
+        w.focus_set()
+
+        if w is getattr(self, "chat_input", None):
+            self.autosize_chat_input()
+
+    def _emoji_key(self, code):
+
+        count = len(self._emoji_names)
+
+        if code in (-1, 1):
+            self._emoji_index = (self._emoji_index + code) % count
+            self._paint_emoji_rows()
+        elif code == 0:
+            self._emoji_pick()
+        else:
+            self._hide_emoji_menu()
+
+        return "break"
 
     def _update_slash_menu(self):
 
@@ -18998,6 +19699,9 @@ class StudesticsApp(tk.Tk):
 
     def _slash_key(self, code):
 
+        if self._emoji_visible():
+            return self._emoji_key(code)
+
         if not self._slash_visible():
             return None
 
@@ -19016,6 +19720,11 @@ class StudesticsApp(tk.Tk):
     def on_chat_input_changed(self, event=None):
 
         self._fix_placeholder_edit()
+
+        try:
+            self._update_emoji_menu()
+        except Exception:
+            pass
 
         try:
             self._update_slash_menu()
@@ -19345,6 +20054,10 @@ class StudesticsApp(tk.Tk):
         self,
         event
     ):
+
+        if self._emoji_visible():
+            self._emoji_pick()
+            return "break"
 
         if self._slash_visible():
             self._slash_pick()
@@ -19865,7 +20578,9 @@ class StudesticsApp(tk.Tk):
 
         self._chat_stop = False
 
-        if text.lower().startswith(("/notes", "/newnotes", "/quiz")):
+        if text.lower().startswith((
+            "/notes", "/newnotes", "/quiz", "/schedule"
+        )):
 
             self.chat_send_button.configure(
                 state="disabled"
@@ -19930,6 +20645,293 @@ class StudesticsApp(tk.Tk):
         self._gemini_client_obj = (key, client)
 
         return client
+
+    def _install_text_shortcuts(self):
+        """Standard editing shortcuts for every text box in the app
+        (Tk lacks Ctrl+Backspace / Ctrl+Delete and maps Ctrl+A to
+        'start of line'): Ctrl+Backspace, Ctrl+Delete, Ctrl+A."""
+
+        def usable(w):
+
+            try:
+                return str(w.cget("state")) not in ("disabled", "readonly")
+            except Exception:
+                return True
+
+        def is_text(w):
+            return isinstance(w, tk.Text)
+
+        def before(w):
+
+            if is_text(w):
+                return w.get("1.0", "insert")
+
+            return w.get()[:int(w.index("insert"))]
+
+        def after(w):
+
+            if is_text(w):
+                return w.get("insert", "end-1c")
+
+            return w.get()[int(w.index("insert")):]
+
+        def remove_selection(w):
+
+            try:
+
+                if is_text(w):
+
+                    if w.tag_ranges("sel"):
+                        w.delete("sel.first", "sel.last")
+                        return True
+
+                elif w.selection_present():
+                    w.delete("sel.first", "sel.last")
+                    return True
+
+            except Exception:
+                pass
+
+            return False
+
+        def word_back(event):
+
+            w = event.widget
+
+            if not usable(w):
+                return "break"
+
+            if remove_selection(w):
+                return "break"
+
+            text = before(w)
+
+            i = len(text)
+
+            while i > 0 and text[i - 1].isspace():
+                i -= 1
+
+            while i > 0 and not text[i - 1].isspace():
+                i -= 1
+
+            count = len(text) - i
+
+            if count:
+
+                if is_text(w):
+                    w.delete(f"insert-{count}c", "insert")
+                else:
+                    pos = int(w.index("insert"))
+                    w.delete(pos - count, pos)
+
+            return "break"
+
+        def word_forward(event):
+
+            w = event.widget
+
+            if not usable(w):
+                return "break"
+
+            if remove_selection(w):
+                return "break"
+
+            text = after(w)
+
+            i = 0
+
+            while i < len(text) and not text[i].isspace():
+                i += 1
+
+            while i < len(text) and text[i].isspace():
+                i += 1
+
+            if i:
+
+                if is_text(w):
+                    w.delete("insert", f"insert+{i}c")
+                else:
+                    pos = int(w.index("insert"))
+                    w.delete(pos, pos + i)
+
+            return "break"
+
+        def select_all(event):
+
+            w = event.widget
+
+            try:
+
+                if is_text(w):
+
+                    w.tag_add("sel", "1.0", "end-1c")
+                    w.mark_set("insert", "end-1c")
+
+                else:
+
+                    w.select_range(0, "end")
+                    w.icursor("end")
+
+            except Exception:
+                pass
+
+            return "break"
+
+        # ---- undo / redo -------------------------------------------
+        # Text boxes get Tk's own undo stack the first time they are
+        # focused; single-line boxes (which have none) get a small
+        # history of their own, grouped so one burst of typing is one
+        # step.
+
+        def history(w):
+
+            state = getattr(w, "_undo_state", None)
+
+            if state is None:
+
+                state = w._undo_state = {
+                    "steps": [w.get()], "at": 0, "when": 0.0
+                }
+
+            return state
+
+        def on_focus(event):
+
+            w = event.widget
+
+            try:
+
+                if is_text(w):
+
+                    if not int(w.cget("undo")):
+
+                        w.configure(
+                            undo=True, autoseparators=True, maxundo=-1
+                        )
+
+                else:
+                    history(w)
+
+            except Exception:
+                pass
+
+        def on_key_release(event):
+
+            w = event.widget
+
+            if is_text(w):
+                return
+
+            try:
+
+                state = history(w)
+
+                current = w.get()
+
+                if current == state["steps"][state["at"]]:
+                    return
+
+                now = time.time()
+
+                del state["steps"][state["at"] + 1:]
+
+                if now - state["when"] < 0.8 and state["at"] > 0:
+                    state["steps"][state["at"]] = current
+
+                else:
+
+                    state["steps"].append(current)
+
+                    state["at"] += 1
+
+                    if len(state["steps"]) > 300:
+
+                        del state["steps"][0]
+
+                        state["at"] -= 1
+
+                state["when"] = now
+
+            except Exception:
+                pass
+
+        def restore(w, state):
+
+            w.delete(0, "end")
+            w.insert(0, state["steps"][state["at"]])
+            w.icursor("end")
+
+            state["when"] = 0.0
+
+        def undo(event):
+
+            w = event.widget
+
+            try:
+
+                if is_text(w):
+
+                    if not int(w.cget("undo")):
+                        return "break"
+
+                    w.edit_undo()
+
+                else:
+
+                    state = history(w)
+
+                    if state["at"] > 0:
+
+                        state["at"] -= 1
+
+                        restore(w, state)
+
+            except Exception:
+                pass
+
+            return "break"
+
+        def redo(event):
+
+            w = event.widget
+
+            try:
+
+                if is_text(w):
+
+                    if not int(w.cget("undo")):
+                        return "break"
+
+                    w.edit_redo()
+
+                else:
+
+                    state = history(w)
+
+                    if state["at"] < len(state["steps"]) - 1:
+
+                        state["at"] += 1
+
+                        restore(w, state)
+
+            except Exception:
+                pass
+
+            return "break"
+
+        for cls in ("Entry", "TEntry", "Text"):
+
+            self.bind_class(cls, "<FocusIn>", on_focus, add="+")
+            self.bind_class(cls, "<KeyRelease>", on_key_release, add="+")
+            self.bind_class(cls, "<Control-z>", undo)
+            self.bind_class(cls, "<Control-Z>", redo)
+            self.bind_class(cls, "<Control-y>", redo)
+            self.bind_class(cls, "<Control-Y>", redo)
+
+            self.bind_class(cls, "<Control-BackSpace>", word_back)
+            self.bind_class(cls, "<Control-Delete>", word_forward)
+            self.bind_class(cls, "<Control-a>", select_all)
+            self.bind_class(cls, "<Control-A>", select_all)
 
     def _warm_gemini(self):
         """Load Gemini in the background when the chat page opens, so
@@ -20403,6 +21405,195 @@ class StudesticsApp(tk.Tk):
 
         self.after(0, lambda: self._notes_cmd_done(reply, error))
 
+    def _schedule_command(self, user_text, extra_parts=None):
+        """/schedule <what to plan>: Gemini turns a description (or a
+        photo of a timetable) into blocks on the Schedule tab."""
+
+        clean, _paths = self._bubble_attachments(user_text)
+
+        request = clean.strip()[len("/schedule"):].strip()
+
+        extra_parts = extra_parts or []
+
+        reply, error = "", None
+
+        try:
+
+            if not request and not extra_parts:
+
+                reply = (
+                    "Use /schedule followed by what you want planned, "
+                    "for example:  /schedule study maths 4 to 5pm and "
+                    "revise chemistry 6 to 7pm on Tuesday, remind me "
+                    "10 minutes before. Name the day (Tuesday, tomorrow, "
+                    "every Friday) or I use today.\n\nYou can also "
+                    "attach a photo "
+                    "of a timetable. I add the blocks to your Schedule "
+                    "tab."
+                )
+
+            else:
+
+                import json
+
+                client = self._gemini_client()
+
+                now = datetime.now()
+
+                existing = []
+
+                for b in self.db.get_schedule():
+
+                    days = [
+                        SCHEDULE_DAYS[int(d)]
+                        for d in b["days"].split(",") if d != ""
+                    ]
+
+                    existing.append(
+                        f"{'/'.join(days)} "
+                        f"{format_clock(b['start_min'])}-"
+                        f"{format_clock(b['end_min'])} {b['title']}"
+                    )
+
+                prompt = (
+                    "You turn a student's request into timetable blocks. "
+                    f"Today is {now.strftime('%A %d %B %Y')} and the "
+                    f"time is {now.strftime('%H:%M')}. The student's "
+                    "current schedule (do not repeat these, and avoid "
+                    "overlapping them):\n"
+                    + ("\n".join(existing) or "(empty)")
+                    + "\n\nRequest: "
+                    + (request or "use the attached file(s)")
+                    + "\n\nAnswer with JSON only, in this shape:\n"
+                    '{"blocks":[{"title":"Study maths","start":"16:00",'
+                    '"end":"17:00","days":["Mon","Tue"],"remind":5}]}\n'
+                    "Rules: start and end are 24-hour HH:MM and end is "
+                    "after start on the same day. days uses Mon Tue Wed "
+                    "Thu Fri Sat Sun. Use ONLY the days the request names "
+                    "(\"tomorrow\" means the day after today); use all "
+                    "weekdays only if it says weekdays or every day. "
+                    "If it names no day, use today's day only. remind is minutes before the start: -1 "
+                    "for no reminder, 0, 5, 10 or 15; default 0. Keep "
+                    "titles short. If the request leaves times open, "
+                    "pick sensible ones. If a day or time is missing "
+                    "and you cannot guess, return an empty list."
+                )
+
+                data, last_error = None, None
+
+                for model_name in self._gemini_model_candidates():
+
+                    try:
+
+                        result = client.models.generate_content(
+                            model=model_name,
+                            contents=(
+                                [*extra_parts, prompt]
+                                if extra_parts else prompt
+                            ),
+                            config={
+                                "response_mime_type": "application/json",
+                                "http_options": {"timeout": 120000}
+                            }
+                        )
+
+                        raw = (result.text or "").strip()
+
+                        if "{" in raw:
+
+                            data = json.loads(
+                                raw[raw.index("{"):raw.rindex("}") + 1]
+                            )
+
+                            break
+
+                    except Exception as exc:
+
+                        last_error = exc
+
+                if data is None:
+
+                    raise last_error or RuntimeError(
+                        "Gemini returned no schedule."
+                    )
+
+                added = []
+
+                for item in data.get("blocks", []):
+
+                    title = str(item.get("title", "")).strip()
+
+                    start = parse_clock(item.get("start", ""))
+                    end = parse_clock(item.get("end", ""))
+
+                    days = {
+                        SCHEDULE_DAYS.index(str(d)[:3].title())
+                        for d in item.get("days", [])
+                        if str(d)[:3].title() in SCHEDULE_DAYS
+                    } or {now.weekday()}
+
+                    try:
+                        remind = int(item.get("remind", 0))
+                    except Exception:
+                        remind = 0
+
+                    if remind not in (-1, 0, 5, 10, 15):
+                        remind = 0
+
+                    if (
+                        not title or start is None or end is None
+                        or end <= start
+                    ):
+                        continue
+
+                    self.db.add_schedule(
+                        title[:80], start, end, days, remind
+                    )
+
+                    added.append((title, start, end, days))
+
+                if not added:
+
+                    reply = (
+                        "I couldn't turn that into blocks. Try something "
+                        "like:  /schedule study maths 4 to 5pm on "
+                        "Tuesday"
+                    )
+
+                else:
+
+                    lines = []
+
+                    for title, start, end, days in added:
+
+                        lines.append(
+                            f"{format_clock(start)} - {format_clock(end)}"
+                            f"  {title}  ("
+                            + ", ".join(
+                                SCHEDULE_DAYS[d] for d in sorted(days)
+                            )
+                            + ")"
+                        )
+
+                    reply = (
+                        f"Added {len(added)} block"
+                        + ("" if len(added) == 1 else "s")
+                        + " to your Schedule tab:\n"
+                        + "\n".join(lines)
+                        + "\n\nOpen Schedule to adjust or delete them."
+                    )
+
+            self.db.add_message("assistant", reply)
+
+        except Exception as exc:
+
+            error = str(exc)
+
+        self.after(
+            0,
+            lambda: self._notes_cmd_done(reply, error, "schedule")
+        )
+
     def _quiz_command(self, user_text, extra_parts=None):
         """/quiz <topic>, or /quiz with files attached: get some study
         text, then open the quiz window on it."""
@@ -20535,7 +21726,7 @@ class StudesticsApp(tk.Tk):
         if material and not error:
             self.start_quiz(material)
 
-    def _notes_cmd_done(self, reply, error):
+    def _notes_cmd_done(self, reply, error, what="notes"):
 
         self.chat_busy = False
 
@@ -20554,12 +21745,16 @@ class StudesticsApp(tk.Tk):
 
             self.add_chat_bubble(
                 "assistant",
-                "Couldn't write the notes: " + error[:300]
+                f"Couldn't write the {what}: " + error[:300]
             )
 
         else:
 
-            self.chat_status.configure(text="Notes added", fg=GREEN)
+            self.chat_status.configure(
+                text="Schedule updated" if what == "schedule"
+                else "Notes added",
+                fg=GREEN
+            )
 
             self.add_chat_bubble("assistant", reply)
 
@@ -20581,6 +21776,12 @@ class StudesticsApp(tk.Tk):
             if user_text.strip().lower().startswith("/quiz"):
 
                 self._quiz_command(user_text, extra_parts=extra_parts)
+
+                return
+
+            if user_text.strip().lower().startswith("/schedule"):
+
+                self._schedule_command(user_text, extra_parts=extra_parts)
 
                 return
 
@@ -26600,6 +27801,127 @@ class StudesticsApp(tk.Tk):
 
         self.center_window(win, width, max(280, win.winfo_reqheight() + 8))
 
+    def show_changelog(self):
+        """What's new in the version that's installed: the release notes
+        for this version, read from its GitHub release."""
+
+        if getattr(self, "_changelog_busy", False):
+            return
+
+        self._changelog_busy = True
+
+        def say(text, color=None):
+
+            def apply():
+
+                label = getattr(self, "_update_status", None)
+
+                try:
+
+                    if label is not None and label.winfo_exists():
+                        label.configure(text=text, fg=color or MUTED_2)
+
+                except Exception:
+                    pass
+
+            self.after(0, apply)
+
+        say("Loading the changelog\u2026")
+
+        def worker():
+
+            try:
+
+                import json
+                import urllib.request
+
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/{UPDATE_REPO}"
+                    f"/releases/tags/v{VERSION}",
+                    headers={
+                        "User-Agent": "Studestics",
+                        "Accept": "application/vnd.github+json"
+                    }
+                )
+
+                with urllib.request.urlopen(request, timeout=12) as reply:
+                    data = json.load(reply)
+
+                notes = str(data.get("body") or "").strip()
+
+                page = str(data.get("html_url") or "")
+
+                if not notes:
+                    raise RuntimeError("empty")
+
+                say("Checks GitHub for a newer version when the app starts.")
+
+                self.after(0, lambda: self._changelog_window(notes, page))
+
+            except Exception:
+
+                say(
+                    "Couldn't load the changelog. Are you online, and is "
+                    f"v{VERSION} published on GitHub?",
+                    RED
+                )
+
+            finally:
+
+                self._changelog_busy = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _changelog_window(self, notes, page):
+
+        win, body, buttons = self._update_window("Changelog")
+
+        tk.Label(
+            body,
+            text="What's new",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 18, "bold")
+        ).pack(anchor="w", pady=(24, 2))
+
+        tk.Label(
+            body,
+            text=f"You have Studestics v{VERSION}",
+            bg=BG,
+            fg=PURPLE_HOVER,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+
+        self._notes_box(body, notes).pack(
+            anchor="w", fill="x", pady=(14, 0)
+        )
+
+        def open_page():
+
+            try:
+
+                import webbrowser
+
+                webbrowser.open(
+                    page
+                    or f"https://github.com/{UPDATE_REPO}/releases"
+                )
+
+            except Exception:
+                pass
+
+        close = self.make_button(buttons, "Close", win.destroy, width=9)
+
+        close.configure(selected=True)
+
+        close.pack(side="right")
+
+        self.make_button(
+            buttons, "Open on GitHub", open_page, width=15
+        ).pack(side="right", padx=(0, 10))
+
+        self._finish_update_window(win)
+
     def show_update_popup(self, info, reason=""):
         """For when the app can't update itself (running from source,
         or the release has no .exe), or when the automatic update
@@ -26880,6 +28202,13 @@ class StudesticsApp(tk.Tk):
             "Check now",
             lambda: self.check_for_updates(True),
             width=11
+        ).pack(side="right", padx=(0, 8))
+
+        self.make_button(
+            row,
+            "See changelog",
+            self.show_changelog,
+            width=13
         ).pack(side="right", padx=(0, 8))
 
         return outer
