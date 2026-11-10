@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -2969,6 +2969,40 @@ class Database:
 
             self.connection.commit()
 
+    def clear_schedule_day(self, day):
+        """Remove every block from one weekday. A block that repeats on
+        other days stays on those days."""
+
+        with self.lock:
+
+            rows = self.connection.execute(
+                "SELECT id, days FROM schedule"
+            ).fetchall()
+
+            for row in rows:
+
+                days = [d for d in row["days"].split(",") if d != ""]
+
+                if str(day) not in days:
+                    continue
+
+                days.remove(str(day))
+
+                if days:
+
+                    self.connection.execute(
+                        "UPDATE schedule SET days=? WHERE id=?",
+                        (",".join(days), row["id"])
+                    )
+
+                else:
+
+                    self.connection.execute(
+                        "DELETE FROM schedule WHERE id=?", (row["id"],)
+                    )
+
+            self.connection.commit()
+
     def delete_schedule(self, block_id):
 
         with self.lock:
@@ -5749,6 +5783,9 @@ class StudesticsApp(tk.Tk):
 
         if not self.initialized:
             return
+
+        if getattr(self, "current_page", None) == "AI Chat":
+            self._save_chat_draft()
 
         self.current_page = page_name
 
@@ -11719,6 +11756,14 @@ class StudesticsApp(tk.Tk):
                 active=DANGER_HOVER
             ).pack(side="left", padx=(8, 0))
 
+            self.make_button(
+                top,
+                "Clear this day",
+                self.clear_schedule_day_confirm,
+                width=13,
+                active=DANGER_HOVER
+            ).pack(side="left", padx=(8, 0))
+
         tabs = tk.Frame(top, bg=BG)
 
         tabs.pack(side="right")
@@ -12650,6 +12695,37 @@ class StudesticsApp(tk.Tk):
             return
 
         self.db.delete_all_schedule()
+
+        self.show_page("Schedule")
+
+    def clear_schedule_day_confirm(self):
+
+        day = self._sched_day
+
+        name = SCHEDULE_DAY_NAMES[day]
+
+        count = sum(
+            1 for b in self.db.get_schedule()
+            if str(day) in b["days"].split(",")
+        )
+
+        if not count:
+
+            messagebox.showinfo(
+                "Clear this day", f"Nothing is planned on {name}."
+            )
+
+            return
+
+        if not messagebox.askyesno(
+            "Clear this day",
+            f"Delete the {count} block" + ("" if count == 1 else "s")
+            + f" on {name}? Blocks that also repeat on other days stay "
+            "on those days."
+        ):
+            return
+
+        self.db.clear_schedule_day(day)
 
         self.show_page("Schedule")
 
@@ -17589,6 +17665,79 @@ class StudesticsApp(tk.Tk):
 
         self.show_chat_placeholder()
 
+        self._restore_chat_draft()
+
+        # A slim thumb on the right edge that only shows when there is
+        # more text than the three visible lines.
+        bar = tk.Canvas(
+            self.chat_input, width=8, bg=PANEL_2,
+            highlightthickness=0, bd=0, cursor="hand2"
+        )
+
+        self._chat_scrollbar = bar
+
+        def draw_thumb(first, last):
+
+            first, last = float(first), float(last)
+
+            if first <= 0.0 and last >= 1.0:
+
+                bar.place_forget()
+
+                return
+
+            full = max(20, self.chat_input.winfo_height() - 8)
+
+            bar.place(relx=1.0, x=-11, y=4, width=8, height=full)
+
+            bar.delete("all")
+
+            top = 4 + first * (full - 8)
+
+            bottom = max(top + 16, 4 + last * (full - 8))
+
+            bar.create_line(
+                4, top, 4, bottom, width=5, capstyle="round",
+                fill=PURPLE
+            )
+
+        self.chat_input.configure(yscrollcommand=draw_thumb)
+
+        def drag(event):
+
+            full = max(20, self.chat_input.winfo_height() - 8)
+
+            first, last = self.chat_input.yview()
+
+            self.chat_input.yview_moveto(
+                max(0.0, event.y / full - (last - first) / 2)
+            )
+
+        bar.bind("<Button-1>", drag)
+        bar.bind("<B1-Motion>", drag)
+
+        def chat_wheel(event):
+
+            # Past three lines the box scrolls instead of the page.
+            try:
+
+                if int(self.chat_input.cget("height")) >= 3:
+
+                    first, last = self.chat_input.yview()
+
+                    if first > 0.0 or last < 1.0:
+
+                        self.chat_input.yview_scroll(
+                            -1 if event.delta > 0 else 1, "units"
+                        )
+
+                        return "break"
+
+            except Exception:
+                pass
+
+        self.chat_input.bind("<MouseWheel>", chat_wheel)
+
         self.chat_input.bind(
             "<Key>",
             self.on_chat_key_press
@@ -17630,6 +17779,10 @@ class StudesticsApp(tk.Tk):
         self.chat_input.bind("<Escape>", lambda e: self._slash_key(9))
         self.chat_input.bind(
             "<FocusOut>", lambda e: self._hide_slash_menu(), add="+"
+        )
+
+        self.chat_input.bind(
+            "<FocusOut>", lambda e: self._hide_emoji_menu(), add="+"
         )
 
         self.chat_input.bind(
@@ -19004,6 +19157,53 @@ class StudesticsApp(tk.Tk):
         "Prior", "Next"
     }
 
+    def _save_chat_draft(self):
+        """Keep what was typed in the message box when leaving AI Chat."""
+
+        try:
+
+            if self.chat_placeholder_active:
+                draft = ""
+            else:
+                draft = self._chat_input_string()
+
+            self._chat_draft = draft
+
+            self.db.set_setting("chat_draft", draft)
+
+        except Exception:
+            pass
+
+    def _restore_chat_draft(self):
+
+        try:
+
+            draft = getattr(self, "_chat_draft", None)
+
+            if draft is None:
+                draft = self.db.get_setting("chat_draft", "") or ""
+
+            if not draft:
+                return
+
+            self.clear_chat_placeholder()
+
+            for part, is_emoji in emoji_segments(draft):
+
+                if is_emoji:
+                    self._put_emoji_image(part)
+                elif part:
+                    self.chat_input.insert("insert", part)
+
+            self.chat_input.mark_set("insert", "end-1c")
+
+            self.chat_input.edit_reset()
+
+            self.autosize_chat_input()
+
+        except Exception:
+            pass
+
     def show_chat_placeholder(self):
 
         self.chat_input.delete("1.0", "end")
@@ -19064,13 +19264,31 @@ class StudesticsApp(tk.Tk):
         if self.chat_placeholder_active:
             return
 
-        display_lines = int(
-            self.chat_input.index("end-1c").split(".")[0]
-        )
+        # Count wrapped lines as they look, not just Enter presses.
+        try:
+
+            self.chat_input.update_idletasks()
+
+            counted = self.chat_input.count(
+                "1.0", "end-1c", "displaylines"
+            )
+
+            # "count" gives the number of line breaks between the two
+            # points, so a one-line box reports 0.
+            display_lines = 1 + int(
+                counted[0] if isinstance(counted, (tuple, list))
+                else (counted or 0)
+            )
+
+        except Exception:
+
+            display_lines = int(
+                self.chat_input.index("end-1c").split(".")[0]
+            )
 
         new_height = min(
             max(display_lines, 1),
-            6
+            3
         )
 
         if int(self.chat_input.cget("height")) != new_height:
@@ -19078,6 +19296,16 @@ class StudesticsApp(tk.Tk):
             self.chat_input.configure(
                 height=new_height
             )
+
+        # Keep the line being typed in view once the box has to scroll.
+        try:
+
+            self.chat_input.update_idletasks()
+
+            self.chat_input.see("insert")
+
+        except Exception:
+            pass
 
     def _chat_placeholder_click(self, event=None):
 
@@ -19139,8 +19367,8 @@ class StudesticsApp(tk.Tk):
             "Quiz yourself on a topic, or on a file you attached"
         ),
         (
-            "/schedule", "what to plan",
-            "Let the AI fill your Schedule tab"
+            "/schedule", "what to plan or change",
+            "Let the AI add, change or delete Schedule blocks"
         )
     ]
 
@@ -19166,8 +19394,6 @@ class StudesticsApp(tk.Tk):
                 menu.place_forget()
             except Exception:
                 pass
-
-        self._hide_emoji_menu()
 
     # ---- emoji in other multi-line boxes (Notes, descriptions) -----
 
@@ -19452,13 +19678,29 @@ class StudesticsApp(tk.Tk):
 
         if w is getattr(self, "chat_input", None):
 
-            menu.place(
-                in_=w,
-                x=0,
-                y=-8,
-                anchor="sw",
-                width=max(260, min(w.winfo_width(), 380))
-            )
+            # Above the box, lined up with the colon (not stuck at the
+            # far left while you type at the end of a long line).
+            width = max(260, min(w.winfo_width(), 340))
+
+            # Pinned to the colon that started the shortcode, so it
+            # stays put while the letters after it are typed.
+            try:
+
+                begin = w.search(
+                    ":" + getattr(self, "_emoji_query", ""), "insert",
+                    "1.0", backwards=True, nocase=True
+                )
+
+                box = w.bbox(begin) if begin else None
+
+            except Exception:
+                box = None
+
+            x = (box[0] - 10) if box else 0
+
+            x = max(0, min(x, w.winfo_width() - width))
+
+            menu.place(in_=w, x=x, y=-8, anchor="sw", width=width)
 
         else:
 
@@ -21406,8 +21648,10 @@ class StudesticsApp(tk.Tk):
         self.after(0, lambda: self._notes_cmd_done(reply, error))
 
     def _schedule_command(self, user_text, extra_parts=None):
-        """/schedule <what to plan>: Gemini turns a description (or a
-        photo of a timetable) into blocks on the Schedule tab."""
+        """/schedule <request>: Gemini edits the Schedule tab. It sees
+        the current blocks and the recent chat, and can add, change
+        (rename, move, re-day) and delete blocks. /schedule undo puts
+        the schedule back the way it was before the last change."""
 
         clean, _paths = self._bubble_attachments(user_text)
 
@@ -21417,19 +21661,63 @@ class StudesticsApp(tk.Tk):
 
         reply, error = "", None
 
+        def days_text(days):
+
+            return ", ".join(SCHEDULE_DAYS[d] for d in sorted(days))
+
+        def day_set(text):
+
+            return {int(d) for d in str(text).split(",") if d != ""}
+
+        def describe(row):
+
+            return (
+                f"{format_clock(row['start_min'])} - "
+                f"{format_clock(row['end_min'])}  {row['title']}  ("
+                + days_text(day_set(row["days"])) + ")"
+            )
+
         try:
 
-            if not request and not extra_parts:
+            if request.lower() in ("undo", "undo that", "revert"):
+
+                saved = getattr(self, "_schedule_undo", None)
+
+                if saved is None:
+
+                    reply = "There's nothing to undo yet."
+
+                else:
+
+                    self.db.delete_all_schedule()
+
+                    for item in saved:
+
+                        self.db.add_schedule(
+                            item["title"], item["start_min"],
+                            item["end_min"], day_set(item["days"]),
+                            item["remind_before"]
+                        )
+
+                    self._schedule_undo = None
+
+                    reply = (
+                        f"Put your schedule back ({len(saved)} block"
+                        + ("" if len(saved) == 1 else "s") + ")."
+                    )
+
+            elif not request and not extra_parts:
 
                 reply = (
-                    "Use /schedule followed by what you want planned, "
-                    "for example:  /schedule study maths 4 to 5pm and "
-                    "revise chemistry 6 to 7pm on Tuesday, remind me "
-                    "10 minutes before. Name the day (Tuesday, tomorrow, "
-                    "every Friday) or I use today.\n\nYou can also "
-                    "attach a photo "
-                    "of a timetable. I add the blocks to your Schedule "
-                    "tab."
+                    "Use /schedule followed by what you want, for "
+                    "example:\n/schedule study maths 4 to 5pm on "
+                    "Tuesday, remind me 10 minutes before\n"
+                    "/schedule move chemistry to 6pm\n"
+                    "/schedule rename the blocks to study, break, "
+                    "revision\n/schedule delete everything on Friday\n"
+                    "/schedule undo\n\nI can add, rename, move and "
+                    "delete blocks, and I remember the recent chat. You "
+                    "can also attach a photo of a timetable."
                 )
 
             else:
@@ -21440,43 +21728,101 @@ class StudesticsApp(tk.Tk):
 
                 now = datetime.now()
 
-                existing = []
+                rows = self.db.get_schedule()
 
-                for b in self.db.get_schedule():
+                existing = [
+                    f"id={r['id']} | {days_text(day_set(r['days']))} | "
+                    f"{format_clock(r['start_min'])}-"
+                    f"{format_clock(r['end_min'])} | {r['title']} | "
+                    f"reminder {r['remind_before']}"
+                    for r in rows
+                ]
 
-                    days = [
-                        SCHEDULE_DAYS[int(d)]
-                        for d in b["days"].split(",") if d != ""
-                    ]
+                recent = []
 
-                    existing.append(
-                        f"{'/'.join(days)} "
-                        f"{format_clock(b['start_min'])}-"
-                        f"{format_clock(b['end_min'])} {b['title']}"
-                    )
+                for row in self.db.get_messages()[-9:]:
+
+                    text = (row["content"] or "").strip()
+
+                    if text:
+
+                        who = "Student" if row["role"] == "user" else "You"
+
+                        recent.append(f"{who}: {text[:300]}")
 
                 prompt = (
-                    "You turn a student's request into timetable blocks. "
-                    f"Today is {now.strftime('%A %d %B %Y')} and the "
-                    f"time is {now.strftime('%H:%M')}. The student's "
-                    "current schedule (do not repeat these, and avoid "
-                    "overlapping them):\n"
+                    "You edit a student's weekly timetable. Today is "
+                    f"{now.strftime('%A %d %B %Y')}, the time is "
+                    f"{now.strftime('%H:%M')}.\n\n"
+                    "CURRENT SCHEDULE:\n"
                     + ("\n".join(existing) or "(empty)")
-                    + "\n\nRequest: "
+                    + "\n\nRECENT CHAT (oldest first):\n"
+                    + ("\n".join(recent) or "(none)")
+                    + "\n\nNEW REQUEST: "
                     + (request or "use the attached file(s)")
-                    + "\n\nAnswer with JSON only, in this shape:\n"
-                    '{"blocks":[{"title":"Study maths","start":"16:00",'
-                    '"end":"17:00","days":["Mon","Tue"],"remind":5}]}\n'
-                    "Rules: start and end are 24-hour HH:MM and end is "
-                    "after start on the same day. days uses Mon Tue Wed "
-                    "Thu Fri Sat Sun. Use ONLY the days the request names "
-                    "(\"tomorrow\" means the day after today); use all "
-                    "weekdays only if it says weekdays or every day. "
-                    "If it names no day, use today's day only. remind is minutes before the start: -1 "
-                    "for no reminder, 0, 5, 10 or 15; default 0. Keep "
-                    "titles short. If the request leaves times open, "
-                    "pick sensible ones. If a day or time is missing "
-                    "and you cannot guess, return an empty list."
+                    + "\n\nAnswer with JSON only:\n"
+                    '{"reply":"short note or question, or empty",'
+                    '"add":[{"title":"Study maths","start":"16:00",'
+                    '"end":"17:00","days":["Tue"],"remind":5}],'
+                    '"update":[{"id":3,"title":"New name","start":"17:00",'
+                    '"end":"18:00","days":["Tue"],"remind":0}],'
+                    '"delete":[4]}\n\n'
+                    "Rules:\n"
+                    "- Decide whether the request means ADD new blocks, "
+                    "CHANGE existing ones (rename, move, resize, change "
+                    "days or reminder: use update with the block's id and "
+                    "only the fields that change) or DELETE. \"Name "
+                    "them\", \"rename\", \"move\", \"make it longer\" and "
+                    "\"change\" are updates to existing blocks, never new "
+                    "blocks. Use the recent chat to work out what "
+                    "\"them\", \"it\" or \"the old one\" refers to.\n"
+                    "- Delete only when the student clearly asks to "
+                    "remove, clear or replace something.\n"
+                    "- start and end are 24-hour HH:MM on a 5-minute "
+                    "grid, end after start, normally 15 to 120 minutes "
+                    "long unless asked. Blocks on the same day must not "
+                    "overlap.\n"
+                    "- days uses Mon Tue Wed Thu Fri Sat Sun. Use ONLY "
+                    "the days the request names (\"tomorrow\" is the day "
+                    "after today); all weekdays only if it says "
+                    "weekdays or every day; if it names no day, use "
+                    "today's day, or the day of the blocks it is "
+                    "changing.\n"
+                    "- remind is minutes before the start: -1 for none, "
+                    "0, 5, 10 or 15; default 0.\n"
+                    "- Titles are short and meaningful, never \"Block "
+                    "1\".\n"
+                    "- Plan like a kind, realistic person, not a drill "
+                    "sergeant. Do NOT create blocks named Break or Rest: "
+                    "breaks are simply the gaps between blocks. Leave at "
+                    "least 10 to 15 minutes between blocks, a longer "
+                    "gap (30 to 60 minutes) for dinner or lunch, and "
+                    "free time in the evening. Prefer fewer, longer "
+                    "sessions (45 to 90 minutes), about 3 to 5 blocks "
+                    "for an evening, unless the student asks for more. "
+                    "Use the subjects the student names or that appear "
+                    "in the schedule or chat; if they gave none, use "
+                    "simple names like Study session.\n"
+                    "- When asked to plan a whole stretch or a whole "
+                    "day (for example \"3:30 to 10 pm\"), make it a "
+                    "balanced day, not all studying: at most about half "
+                    "of the time is study. Include real life as named "
+                    "blocks: Dinner (and Lunch if it fits), exercise or "
+                    "a Walk, Free time or a hobby, time with family or "
+                    "friends, and a Wind down before bed. Study blocks "
+                    "come in a few sessions with different subjects, "
+                    "and the evening ends light.\n"
+                    "- Words like \"these blocks\", \"them\" or "
+                    "\"my schedule\" mean the blocks that already "
+                    "exist: change their times or names with update, "
+                    "reuse as many as fit, add only the extra ones "
+                    "needed and delete surplus ones only if the student "
+                    "asked for fewer. Never add a block that duplicates "
+                    "or overlaps an existing one.\n"
+                    "- Do only what was asked. If the request is unclear, "
+                    "return empty lists and ask one short question in "
+                    "reply. Never invent a time the student did not "
+                    "imply."
                 )
 
                 data, last_error = None, None
@@ -21517,28 +21863,116 @@ class StudesticsApp(tk.Tk):
                         "Gemini returned no schedule."
                     )
 
-                added = []
+                def parse_days(value, fallback):
 
-                for item in data.get("blocks", []):
+                    found = {
+                        SCHEDULE_DAYS.index(str(d)[:3].title())
+                        for d in (value or [])
+                        if str(d)[:3].title() in SCHEDULE_DAYS
+                    }
+
+                    return found or fallback
+
+                def parse_remind(value, fallback):
+
+                    try:
+                        value = int(value)
+                    except Exception:
+                        return fallback
+
+                    return value if value in (-1, 0, 5, 10, 15) else fallback
+
+                by_id = {r["id"]: r for r in rows}
+
+                snapshot = [dict(r) for r in rows]
+
+                removed, edited, added = [], [], []
+
+                changed = False
+
+                handled = set()
+
+                for item in data.get("delete", []) or []:
+
+                    try:
+                        target = by_id.get(int(item))
+                    except Exception:
+                        target = None
+
+                    if target is not None and target["id"] not in handled:
+
+                        handled.add(target["id"])
+
+                        self.db.delete_schedule(target["id"])
+
+                        removed.append(describe(target))
+
+                        changed = True
+
+                for item in data.get("update", []) or []:
+
+                    try:
+                        target = by_id.get(int(item.get("id")))
+                    except Exception:
+                        target = None
+
+                    if target is None or target["id"] in handled:
+                        continue
+
+                    handled.add(target["id"])
+
+                    title = str(
+                        item.get("title") or target["title"]
+                    ).strip()[:80] or target["title"]
+
+                    start = (
+                        parse_clock(item["start"])
+                        if item.get("start") else target["start_min"]
+                    )
+
+                    end = (
+                        parse_clock(item["end"])
+                        if item.get("end") else target["end_min"]
+                    )
+
+                    if start is None or end is None or end <= start:
+                        start, end = target["start_min"], target["end_min"]
+
+                    days = parse_days(
+                        item.get("days"), day_set(target["days"])
+                    )
+
+                    remind = parse_remind(
+                        item.get("remind"), target["remind_before"]
+                    )
+
+                    self.db.update_schedule(
+                        target["id"], title, start, end, days, remind
+                    )
+
+                    edited.append(describe({
+                        "title": title, "start_min": start,
+                        "end_min": end,
+                        "days": ",".join(str(d) for d in days)
+                    }))
+
+                    changed = True
+
+                busy = {d: [] for d in range(7)}
+
+                for r in self.db.get_schedule():
+
+                    for d in day_set(r["days"]):
+                        busy[d].append((r["start_min"], r["end_min"]))
+
+                skipped = 0
+
+                for item in data.get("add", []) or []:
 
                     title = str(item.get("title", "")).strip()
 
                     start = parse_clock(item.get("start", ""))
                     end = parse_clock(item.get("end", ""))
-
-                    days = {
-                        SCHEDULE_DAYS.index(str(d)[:3].title())
-                        for d in item.get("days", [])
-                        if str(d)[:3].title() in SCHEDULE_DAYS
-                    } or {now.weekday()}
-
-                    try:
-                        remind = int(item.get("remind", 0))
-                    except Exception:
-                        remind = 0
-
-                    if remind not in (-1, 0, 5, 10, 15):
-                        remind = 0
 
                     if (
                         not title or start is None or end is None
@@ -21546,41 +21980,73 @@ class StudesticsApp(tk.Tk):
                     ):
                         continue
 
+                    days = parse_days(item.get("days"), {now.weekday()})
+
+                    if any(
+                        start < b_end and b_start < end
+                        for d in days for b_start, b_end in busy[d]
+                    ):
+                        skipped += 1
+                        continue
+
+                    for d in days:
+                        busy[d].append((start, end))
+
+                    remind = parse_remind(item.get("remind"), 0)
+
                     self.db.add_schedule(
                         title[:80], start, end, days, remind
                     )
 
-                    added.append((title, start, end, days))
+                    added.append(describe({
+                        "title": title[:80], "start_min": start,
+                        "end_min": end,
+                        "days": ",".join(str(d) for d in days)
+                    }))
 
-                if not added:
+                    changed = True
+
+                note = str(data.get("reply") or "").strip()
+
+                if changed:
+
+                    self._schedule_undo = snapshot
+
+                    sections = []
+
+                    for label, group in (
+                        ("Added", added), ("Changed", edited),
+                        ("Removed", removed)
+                    ):
+
+                        if group:
+
+                            sections.append(
+                                f"{label} {len(group)} block"
+                                + ("" if len(group) == 1 else "s")
+                                + ":\n" + "\n".join(group)
+                            )
+
+                    if skipped:
+
+                        sections.append(
+                            f"Skipped {skipped} block"
+                            + ("" if skipped == 1 else "s")
+                            + " that would overlap one you already have."
+                        )
 
                     reply = (
-                        "I couldn't turn that into blocks. Try something "
-                        "like:  /schedule study maths 4 to 5pm on "
-                        "Tuesday"
+                        (note + "\n\n" if note else "")
+                        + "\n\n".join(sections)
+                        + "\n\nOpen Schedule to see it. Type "
+                        "/schedule undo to put it back."
                     )
 
                 else:
 
-                    lines = []
-
-                    for title, start, end, days in added:
-
-                        lines.append(
-                            f"{format_clock(start)} - {format_clock(end)}"
-                            f"  {title}  ("
-                            + ", ".join(
-                                SCHEDULE_DAYS[d] for d in sorted(days)
-                            )
-                            + ")"
-                        )
-
-                    reply = (
-                        f"Added {len(added)} block"
-                        + ("" if len(added) == 1 else "s")
-                        + " to your Schedule tab:\n"
-                        + "\n".join(lines)
-                        + "\n\nOpen Schedule to adjust or delete them."
+                    reply = note or (
+                        "I couldn't tell what to change. Try something "
+                        "like:  /schedule move chemistry to 6pm"
                     )
 
             self.db.add_message("assistant", reply)
