@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -1695,6 +1695,18 @@ def nav_icon_image(kind, color, size=26, filled=False):
                 box(x - 1.05, y - 1.05, x + 1.05, y + 1.05),
                 fill=gone if filled else color
             )
+
+    elif kind == "bell":
+
+        d.ellipse(box(6, 3.8, 18, 15.5), fill=color)
+
+        d.rounded_rectangle(
+            box(4, 12.5, 20, 17.2), radius=2.2 * u, fill=color
+        )
+
+        d.ellipse(box(10.2, 17.6, 13.8, 21.2), fill=color)
+
+        d.ellipse(box(10.6, 2.2, 13.4, 5), fill=color)
 
     elif kind == "bars":
 
@@ -4121,7 +4133,9 @@ class RoundedButton:
         elif self.selected or self.hovered:
             bg_color, fg_color = self.active_color, "#FFFFFF"
         else:
-            bg_color, fg_color = PANEL_2, TEXT
+            bg_color, fg_color = (
+                getattr(self, "idle_color", None) or PANEL_2
+            ), TEXT
 
         self.app._draw_bubble_background(
             self.canvas, w, h, min(h // 2, 18), bg_color
@@ -4300,8 +4314,11 @@ class StudesticsApp(tk.Tk):
 
         self.title(APP_NAME)
 
+        self.update_idletasks()
         self.geometry(
-            "1220x760"
+            f"1220x760+"
+            f"{max(0, (self.winfo_screenwidth() - 1220) // 2)}+"
+            f"{max(0, (self.winfo_screenheight() - 760) // 2 - 20)}"
         )
 
         self.minsize(
@@ -4565,7 +4582,7 @@ class StudesticsApp(tk.Tk):
             for attribute, value in (
                 (20, dark),          # dark title bar
                 (35, colour(BG)),    # caption colour
-                (34, colour(BORDER)),  # window border
+                (34, colour(getattr(window, "_glow", BORDER))),  # window border
                 (36, colour(TEXT))   # caption text
             ):
 
@@ -4588,6 +4605,43 @@ class StudesticsApp(tk.Tk):
             try:
 
                 if window.winfo_toplevel() is window:
+
+                    if (
+                        window is not self
+                        and sys.platform == "win32"
+                        and not window.overrideredirect()
+                        and not getattr(window, "_minimal_bar", False)
+                    ):
+
+                        # Every pop-up gets the same minimal header: no
+                        # icon, no title text, no min/max - only the cross.
+                        # The normal frame stays, so corners stay rounded.
+                        window._minimal_bar = True
+
+                        if not hasattr(window, "_glow"):
+                            window._glow = PURPLE
+
+                        try:
+                            window.title("")
+                            ico = getattr(self, "_blank_ico", None)
+                            if ico is None:
+                                import tempfile
+                                from PIL import Image
+                                ico = os.path.join(
+                                    tempfile.gettempdir(),
+                                    "studestics_blank.ico"
+                                )
+                                Image.new(
+                                    "RGBA", (32, 32), (0, 0, 0, 0)
+                                ).save(
+                                    ico, format="ICO",
+                                    sizes=[(16, 16), (32, 32)]
+                                )
+                                self._blank_ico = ico
+                            window.iconbitmap(ico)
+                        except Exception:
+                            pass
+
                     window.after(20, lambda: self._paint_titlebar(window))
 
             except Exception:
@@ -4603,6 +4657,12 @@ class StudesticsApp(tk.Tk):
         self._title_bar_hook()
 
         self._paint_titlebar(self)
+
+        try:
+            if self.db.get_setting("window_state", "normal") == "zoomed":
+                self.state("zoomed")
+        except Exception:
+            pass
 
         self.show_page(
             "Dashboard"
@@ -5348,6 +5408,9 @@ class StudesticsApp(tk.Tk):
         active=PURPLE_HOVER
     ):
 
+        if active == PURPLE_HOVER and text in ("Dismiss", "Cancel"):
+            active = RED
+
         return RoundedButton(
             self,
             parent,
@@ -5421,19 +5484,6 @@ class StudesticsApp(tk.Tk):
         """Dark, rounded-button replacement for the Windows message
         boxes. Returns True/False for questions, None for notices."""
 
-        window = tk.Toplevel(parent or self)
-
-        window.title(title)
-
-        window.configure(bg=BG)
-
-        window.resizable(False, False)
-
-        try:
-            window.transient(parent or self)
-        except Exception:
-            pass
-
         result = {"value": False}
 
         danger = kind == "ask" and title.split(" ")[0] in (
@@ -5447,85 +5497,31 @@ class StudesticsApp(tk.Tk):
             "ask": RED if danger else PURPLE_HOVER
         }[kind]
 
-        body = tk.Frame(window, bg=BG)
+        kicker = {
+            "error": "Error",
+            "warning": "Warning",
+            "info": "Notice",
+            "ask": "Please confirm"
+        }[kind]
 
-        body.pack(
-            fill="both",
-            expand=True,
-            padx=28,
-            pady=(26, 8)
+        shell = self._alert_shell(
+            kicker, title, accent,
+            "check" if kind == "info" else "bell",
+            message, width=480
         )
 
-        tk.Frame(
-            body,
-            bg=accent,
-            width=4
-        ).pack(
-            side="left",
-            fill="y",
-            padx=(0, 16)
-        )
+        window = shell["win"]
 
-        text_box = tk.Frame(body, bg=BG)
+        buttons = tk.Frame(shell["foot"], bg=BG)
 
-        text_box.pack(
-            side="left",
-            fill="both",
-            expand=True
-        )
-
-        tk.Label(
-            text_box,
-            text=title,
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 15, "bold"),
-            anchor="w",
-            justify="left"
-        ).pack(
-            anchor="w"
-        )
-
-        tk.Label(
-            text_box,
-            text=message,
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            wraplength=340,
-            anchor="w",
-            justify="left"
-        ).pack(
-            anchor="w",
-            pady=(6, 0)
-        )
-
-        tk.Frame(
-            window,
-            bg=BORDER,
-            height=1
-        ).pack(
-            fill="x",
-            pady=(18, 0)
-        )
-
-        buttons = tk.Frame(window, bg=BG)
-
-        buttons.pack(
-            fill="x",
-            padx=28,
-            pady=16
-        )
+        buttons.pack()
 
         def finish(value):
-
             result["value"] = value
-
             try:
                 window.grab_release()
             except Exception:
                 pass
-
             window.destroy()
 
         if kind == "ask":
@@ -5536,27 +5532,24 @@ class StudesticsApp(tk.Tk):
                 "Remove": "Remove"
             }.get(title.split(" ")[0], "Yes")
 
+            self.make_button(
+                buttons,
+                "Cancel",
+                lambda: finish(False),
+                width=10
+            ).pack(side="left", padx=4)
+
             confirm = self.make_button(
                 buttons,
                 yes_text,
                 lambda: finish(True),
-                width=9,
+                width=10,
                 active="#DC2626" if danger else PURPLE_HOVER
             )
 
             confirm.configure(selected=True)
 
-            confirm.pack(side="right")
-
-            self.make_button(
-                buttons,
-                "Cancel",
-                lambda: finish(False),
-                width=9
-            ).pack(
-                side="right",
-                padx=(0, 10)
-            )
+            confirm.pack(side="left", padx=4)
 
         else:
 
@@ -5564,25 +5557,20 @@ class StudesticsApp(tk.Tk):
                 buttons,
                 "OK",
                 lambda: finish(True),
-                width=9
+                width=10
             )
 
             ok.configure(selected=True)
 
-            ok.pack(side="right")
+            ok.pack()
 
             window.bind("<Return>", lambda e: finish(True))
 
         window.bind("<Escape>", lambda e: finish(False))
+
         window.protocol("WM_DELETE_WINDOW", lambda: finish(False))
 
-        window.update_idletasks()
-
-        self.center_window(
-            window,
-            460,
-            window.winfo_reqheight()
-        )
+        self._alert_show(shell)
 
         try:
             window.grab_set()
@@ -6295,18 +6283,7 @@ class StudesticsApp(tk.Tk):
 
         self._avatar_hover_edit(avatar, 96)
 
-        change = tk.Label(
-            avatar_box,
-            text="Change photo",
-            bg=PANEL,
-            fg=MUTED_2,
-            font=("Segoe UI", 8),
-            cursor="hand2"
-        )
-
-        change.pack(pady=(6, 0))
-
-        for w in (avatar, change):
+        for w in (avatar,):
 
             w.bind("<Button-1>", lambda e: self.choose_profile_photo())
 
@@ -8462,6 +8439,18 @@ class StudesticsApp(tk.Tk):
 
             canvas.delete("card_bg", "card_text")
 
+            def outlined(x, y, **kw):
+                if has_photo:
+                    dark = dict(kw)
+                    dark["fill"] = "#0A0A12"
+                    for dx, dy in (
+                        (-2, 0), (2, 0), (0, -2), (0, 2),
+                        (-1, -1), (1, -1), (-1, 1), (1, 1)
+                    ):
+                        canvas.create_text(x + dx, y + dy, **dark)
+                canvas.create_text(x, y, **kw)
+
+
             canvas.create_image(
                 0, 0, anchor="nw", image=photo, tags="card_bg"
             )
@@ -8477,7 +8466,7 @@ class StudesticsApp(tk.Tk):
             if is_completed:
                 title = "✓ " + title
 
-            canvas.create_text(
+            outlined(
                 18, 20,
                 anchor="nw",
                 text=fit(title, title_font, max_text_w),
@@ -8506,7 +8495,7 @@ class StudesticsApp(tk.Tk):
                 f"  •  {task['priority']}"
             )
 
-            canvas.create_text(
+            outlined(
                 18, card_height - 20,
                 anchor="sw",
                 text=meta,
@@ -8521,7 +8510,7 @@ class StudesticsApp(tk.Tk):
 
             if due_text:
 
-                canvas.create_text(
+                outlined(
                     18 + small_font.measure(meta), card_height - 20,
                     anchor="sw",
                     text="  \u2022  " + due_text,
@@ -8727,7 +8716,9 @@ class StudesticsApp(tk.Tk):
             "Edit task" if editing else "New task"
         )
 
-        self.center_window(window, 700, 880)
+        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+
+        self.center_window(window, 700, 908)
 
         window.configure(
             bg=BG
@@ -8739,16 +8730,9 @@ class StudesticsApp(tk.Tk):
 
         window.grab_set()
 
-        tk.Label(
-            window,
-            text="Edit task" if editing else "Create task",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 19, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(25, 20)
+        self._form_header(
+            window, "Task",
+            "Edit task" if editing else "Create task", "check"
         )
 
         # Buttons are pinned to the bottom FIRST, before the scrollable
@@ -10499,7 +10483,9 @@ class StudesticsApp(tk.Tk):
 
         window.title("Edit goal" if editing else "New goal")
 
-        self.center_window(window, 560, 500)
+        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+
+        self.center_window(window, 560, 528)
 
         window.configure(bg=BG)
 
@@ -10507,16 +10493,9 @@ class StudesticsApp(tk.Tk):
 
         window.grab_set()
 
-        tk.Label(
-            window,
-            text="Edit goal" if editing else "Create goal",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 19, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(25, 18)
+        self._form_header(
+            window, "Goal",
+            "Edit goal" if editing else "Create goal", "target"
         )
 
         # Footer first, so it stays pinned at the bottom.
@@ -10874,11 +10853,13 @@ class StudesticsApp(tk.Tk):
         win = tk.Toplevel(self)
 
         win.title("Quiz me")
+
+        tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
         win.configure(bg=BG)
         win.resizable(False, False)
         win.transient(self)
 
-        self.center_window(win, 600, 330)
+        self.center_window(win, 600, 334)
 
         body = tk.Frame(win, bg=BG)
 
@@ -10913,6 +10894,12 @@ class StudesticsApp(tk.Tk):
                 # Grow downwards in place, so the window doesn't jump.
                 win.geometry(f"600x{height}")
 
+        def header(kicker, heading, accent=PURPLE, icon="note", top=6):
+            self._form_header(
+                body, kicker, heading, icon,
+                pady=(top, 2), padx=0, accent=accent
+            ).pack_configure(anchor="w")
+
         def label(text, size=11, bold=False, colour=TEXT, **kw):
 
             widget = tk.Label(
@@ -10934,9 +10921,7 @@ class StudesticsApp(tk.Tk):
 
             clear()
 
-            label("Making your quiz\u2026", 18, True).pack_configure(
-                pady=(60, 6)
-            )
+            header("Quiz", "Making your quiz\u2026", top=30)
 
             count = state["count"]
 
@@ -10958,7 +10943,7 @@ class StudesticsApp(tk.Tk):
 
             clear()
 
-            label("Quiz me", 18, True).pack_configure(pady=(30, 4))
+            header("Quiz", "Quiz me", top=10)
 
             label(
                 "How many questions do you want? Drag the slider.",
@@ -11122,9 +11107,7 @@ class StudesticsApp(tk.Tk):
 
             clear()
 
-            label("Couldn't make a quiz", 18, True).pack_configure(
-                pady=(40, 8)
-            )
+            header("Quiz", "Couldn't make a quiz", RED, top=20)
 
             label(message[:300], 10, colour=RED)
 
@@ -11284,7 +11267,7 @@ class StudesticsApp(tk.Tk):
 
             score = state["score"]
 
-            label("Quiz done", 18, True).pack_configure(pady=(50, 6))
+            header("Quiz", "Quiz done", GREEN, "check", top=20)
 
             label(
                 f"You got {score} of {total}.",
@@ -12266,7 +12249,9 @@ class StudesticsApp(tk.Tk):
 
         window.title("Edit block" if editing else "New block")
 
-        self.center_window(window, 600, 590)
+        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+
+        self.center_window(window, 600, 618)
 
         window.configure(bg=BG)
 
@@ -12274,13 +12259,10 @@ class StudesticsApp(tk.Tk):
 
         window.grab_set()
 
-        tk.Label(
-            window,
-            text="Edit block" if editing else "New block",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 19, "bold")
-        ).pack(anchor="w", padx=28, pady=(25, 16))
+        self._form_header(
+            window, "Schedule",
+            "Edit block" if editing else "New block", "calendar"
+        )
 
         buttons = tk.Frame(window, bg=BG)
 
@@ -12794,8 +12776,8 @@ class StudesticsApp(tk.Tk):
                 self.after(15000, self._schedule_tick)
 
     def show_schedule_alarm(self, blocks):
-        """Popup for a block that is starting: a short beep, stays on
-        top until dealt with, even if the app is hidden in the tray."""
+        """Card for a block that is starting: a short beep, stays on top
+        until dealt with, even if the app is hidden in the tray."""
 
         old = getattr(self, "_sched_popup", None)
 
@@ -12806,158 +12788,179 @@ class StudesticsApp(tk.Tk):
             except Exception:
                 pass
 
-        shown = list(blocks[:4])
+        blocks = list(blocks)
 
-        extra = len(blocks) - len(shown)
+        first = blocks[0]
 
-        win = tk.Toplevel(self)
+        def minute_now():
 
-        self._sched_popup = win
+            now = datetime.now()
 
-        self._attach_alarm(win, False)
+            return now.hour * 60 + now.minute
 
-        win.title("Studestics schedule")
-        win.configure(bg=BG)
-        win.attributes("-topmost", True)
+        def range_text(block):
 
-        self.center_window(
-            win, 480, 215 + 52 * len(shown) + (24 if extra else 0)
-        )
-
-        now = datetime.now()
-
-        minute = now.hour * 60 + now.minute
-
-        first = shown[0]
-
-        if len(blocks) == 1 and first["start_min"] > minute:
-
-            gap = first["start_min"] - minute
-
-            subtitle = (
-                f"Starts in {gap} minute" + ("" if gap == 1 else "s")
+            return (
+                f"{format_clock(block['start_min'])} – "
+                f"{format_clock(block['end_min'])}"
             )
 
-        elif len(blocks) == 1:
+        def status():
 
-            subtitle = "It's time."
+            gap = first["start_min"] - minute_now()
 
-        else:
+            if len(blocks) > 1:
+                return f"{len(blocks)} blocks are starting."
 
-            subtitle = f"{len(blocks)} blocks are starting."
+            if gap > 0:
+                return (
+                    f"Starts in {gap} minute" + ("" if gap == 1 else "s")
+                    + f"   ·   {range_text(first)}"
+                )
+
+            return f"Starting now   ·   {range_text(first)}"
+
+        starting = first["start_min"] <= minute_now()
+
+        accent = GREEN if starting else PURPLE
 
         if len(blocks) == 1:
 
             heading = first["title"]
 
-            if len(heading) > 26:
-                heading = heading[:25] + "…"
+            if len(heading) > 30:
+                heading = heading[:29] + "…"
 
         else:
 
             heading = "Up next"
 
-        tk.Label(
-            win,
-            text=heading,
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 26, "bold")
-        ).pack(anchor="w", padx=28, pady=(24, 2))
+        shell = self._alert_shell(
+            "Starting now" if starting else "Up next",
+            heading, accent, "calendar", status()
+        )
 
-        tk.Label(
-            win,
-            text=subtitle,
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10)
-        ).pack(anchor="w", padx=28, pady=(0, 14))
+        win = shell["win"]
 
-        bar = tk.Frame(win, bg=BG)
+        self._sched_popup = win
 
-        bar.pack(side="bottom", fill="x", padx=28, pady=20)
+        win.title("Studestics schedule")
 
-        rows = tk.Frame(win, bg=BG)
+        self._attach_alarm(win, False)
 
-        rows.pack(fill="x", padx=28)
+        body = shell["body"]
 
-        for block in shown:
+        if len(blocks) > 1:
 
-            row = tk.Frame(rows, bg=PANEL_2)
+            for block in blocks[:4]:
 
-            row.pack(fill="x", pady=3)
+                self._alert_row(
+                    body, accent, block["title"], range_text(block)
+                )
 
-            tk.Label(
-                row,
-                text=(
-                    f"{format_clock(block['start_min'])} – "
-                    f"{format_clock(block['end_min'])}"
-                ),
-                bg=PANEL_2,
-                fg=PURPLE_HOVER,
-                font=("Segoe UI", 10, "bold")
-            ).pack(side="left", padx=(14, 10), pady=12)
-
-            if len(blocks) > 1:
-
-                name = block["title"]
-
-                if len(name) > 30:
-                    name = name[:29] + "…"
+            if len(blocks) > 4:
 
                 tk.Label(
-                    row,
-                    text=name,
-                    bg=PANEL_2,
-                    fg=TEXT,
-                    font=("Segoe UI", 10, "bold"),
-                    anchor="w"
-                ).pack(side="left", fill="x", expand=True)
+                    body, text=f"+ {len(blocks) - 4} more", bg=BG,
+                    fg=MUTED_2, font=("Segoe UI", 9)
+                ).pack(anchor="w", pady=(4, 0))
 
-        if extra:
+        # What comes after, so the day has a shape.
+        try:
 
-            tk.Label(
-                win,
-                text=f"+ {extra} more",
-                bg=BG,
-                fg=MUTED_2,
-                font=("Segoe UI", 9)
-            ).pack(anchor="w", padx=30, pady=(4, 0))
+            today = str(datetime.now().weekday())
 
-        def snooze():
+            ids = {b["id"] for b in blocks}
+
+            later = [
+                b for b in self.db.get_schedule()
+                if today in b["days"].split(",")
+                and b["id"] not in ids
+                and b["start_min"] >= first["end_min"] - 1
+            ]
+
+            if later:
+
+                nxt = later[0]
+
+                tk.Label(
+                    body,
+                    text=(
+                        f"After this:  {format_clock(nxt['start_min'])}"
+                        f"   {nxt['title']}"
+                    ),
+                    bg=BG, fg=MUTED_2, font=("Segoe UI", 9), anchor="w"
+                ).pack(anchor="w", pady=(6, 0))
+
+        except Exception:
+            pass
+
+        def refresh():
+
+            try:
+
+                if not win.winfo_exists():
+                    return
+
+                shell["sub"].configure(text=status())
+
+                if first["start_min"] <= minute_now():
+                    shell["kicker"].configure(
+                        text="STARTING NOW", fg=GREEN
+                    )
+                    shell["strip"].configure(bg=GREEN)
+
+                win.after(15000, refresh)
+
+            except Exception:
+                pass
+
+        win.after(15000, refresh)
+
+        def snooze(minutes):
 
             win.destroy()
 
             self.after(
-                5 * 60 * 1000,
+                minutes * 60 * 1000,
                 lambda b=list(blocks): self.show_schedule_alarm(b)
             )
 
+        foot = shell["foot"]
+
+        self._alert_snooze_row(foot, (5, 10, 15), snooze)
+
+        bar = tk.Frame(foot, bg=BG)
+
+        bar.pack()
+
         def open_app():
-
             self.restore_window()
-
             self._sched_day = datetime.now().weekday()
-
             self.show_page("Schedule")
-
             win.destroy()
 
-        centred = tk.Frame(bar, bg=BG)
-
-        centred.pack()
-
-        self.make_button(centred, "Open app", open_app, width=9).pack(
-            side="left"
+        self.make_button(
+            bar, "Dismiss", win.destroy, width=10, active=RED
+        ).pack(
+            side="left", padx=4
         )
 
-        self.make_button(centred, "Snooze 5 min", snooze, width=12).pack(
-            side="left", padx=8
+        self.make_button(bar, "Open app", open_app, width=10).pack(
+            side="left", padx=4
         )
 
-        self.make_button(centred, "Dismiss", win.destroy, width=9).pack(
-            side="left"
+        go = self.make_button(
+            bar, "Start focus",
+            lambda: (self._start_focus_from_alert(), win.destroy()),
+            width=10
         )
+
+        go.configure(selected=True)
+
+        go.pack(side="left", padx=4)
+
+        self._alert_show(shell)
 
     # ========================================================
     # FOCUS MODE
@@ -13788,6 +13791,8 @@ class StudesticsApp(tk.Tk):
 
         win = tk.Toplevel(self)
 
+        win._glow = PURPLE
+
         win.title("Choose a task")
         win.configure(bg=BG)
         win.transient(self)
@@ -13796,20 +13801,19 @@ class StudesticsApp(tk.Tk):
         self.center_window(
             win,
             480,
-            190 + 46 * max(1, len(shown)) + (24 if extra else 0)
+            215 + 68 * max(1, len(shown)) + (24 if extra else 0)
         )
 
+        tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
+
         tk.Label(
-            win,
-            text="Focus on which task?",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 18, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(24, 14)
-        )
+            win, text="FOCUS MODE", bg=BG, fg=PURPLE,
+            font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w", padx=28, pady=(20, 0))
+
+        self._glow_heading(
+            win, "Focus on which task?", PURPLE, 18
+        ).pack(anchor="w", padx=28, pady=(2, 14))
 
         bar = tk.Frame(win, bg=BG)
 
@@ -13848,55 +13852,22 @@ class StudesticsApp(tk.Tk):
                 padx=28
             )
 
+        list_frame = tk.Frame(win, bg=BG)
+
+        if shown:
+            list_frame.pack(fill="x", padx=28)
+
         for task in shown:
 
-            row = tk.Frame(win, bg=PANEL_2)
-
-            row.pack(
-                fill="x",
-                padx=28,
-                pady=3
-            )
-
-            tk.Label(
-                row,
-                text="●",
-                bg=PANEL_2,
-                fg=priority_color(task["priority"]),
-                font=("Segoe UI", 8)
-            ).pack(
-                side="left",
-                padx=(12, 6),
-                pady=10
-            )
-
-            title = task["title"]
-
-            if len(title) > 32:
-                title = title[:31] + "…"
-
-            tk.Label(
-                row,
-                text=title,
-                bg=PANEL_2,
-                fg=TEXT,
-                font=("Segoe UI", 10, "bold"),
-                anchor="w"
-            ).pack(
-                side="left",
-                fill="x",
-                expand=True
-            )
-
-            self.make_button(
-                row,
-                "Select",
-                lambda tid=task["id"]: pick(tid),
-                width=7
-            ).pack(
-                side="right",
-                padx=8,
-                pady=6
+            self._alert_row(
+                list_frame,
+                priority_color(task["priority"]),
+                task["title"],
+                f"{task['priority']} priority",
+                action=(
+                    "Select",
+                    lambda tid=task["id"]: pick(tid)
+                )
             )
 
         if extra:
@@ -15534,6 +15505,7 @@ class StudesticsApp(tk.Tk):
         win = tk.Toplevel(self)
 
         win.withdraw()
+
         win.overrideredirect(True)
         win.configure(bg=BG)
         win.geometry(f"{sw}x{sh}+{x}+{y}")
@@ -16301,17 +16273,6 @@ class StudesticsApp(tk.Tk):
 
         task = self._focus_task()
 
-        win = tk.Toplevel(self)
-
-        win.configure(bg=BG)
-        win.attributes("-topmost", True)
-
-        # A full focus round rings until you answer; the end of a
-        # break is a single, gentler beep.
-        self._attach_alarm(win, finished == "focus")
-
-        self.center_window(win, 560, 230)
-
         if finished == "focus":
 
             if next_phase == "long":
@@ -16319,142 +16280,93 @@ class StudesticsApp(tk.Tk):
             else:
                 heading = f"Round {self.pomo_done} done"
 
-            win.title(heading)
-
             if next_phase == "long":
-
                 summary = (
                     f"{POMO_ROUNDS} rounds finished. "
                     f"Take a {POMO_LONG // 60}-minute break."
                 )
-
             else:
-
                 summary = (
                     f"{self._focus_len_text()} focused. "
                     f"Take a {POMO_SHORT // 60}-minute break."
                 )
 
             if task is not None:
-
                 title = task["title"]
-
                 if len(title) > 30:
                     title = title[:29] + "…"
-
                 summary += f' You were working on "{title}".'
+
+            kicker, accent, icon = "Focus round", GREEN, "check"
 
         else:
 
             heading = "Break's over"
-
-            win.title(heading)
 
             summary = (
                 f"Ready for round {self.pomo_done + 1} "
                 f"of {POMO_ROUNDS}?"
             )
 
-        tk.Label(
-            win,
-            text=heading,
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 18, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(28, 4)
-        )
+            kicker, accent, icon = "Break", YELLOW, "clock"
 
-        tk.Label(
-            win,
-            text=summary,
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            wraplength=500,
-            justify="left"
-        ).pack(
-            anchor="w",
-            padx=28
-        )
+        shell = self._alert_shell(kicker, heading, accent, icon, summary)
 
-        bar = tk.Frame(win, bg=BG)
+        win = shell["win"]
 
-        bar.pack(
-            side="bottom",
-            fill="x",
-            padx=28,
-            pady=22
-        )
+        # A full focus round rings until you answer; the end of a
+        # break is a single, gentler beep.
+        self._attach_alarm(win, finished == "focus")
+
+        bar = tk.Frame(shell["foot"], bg=BG)
+
+        bar.pack()
 
         def start_next():
-
             win.destroy()
-
             if not self.focus_running:
                 self.toggle_focus()
 
         def skip():
-
             win.destroy()
             self.skip_break()
-
-        primary = self.make_button(
-            bar,
-            "Start break" if finished == "focus" else "Start focus",
-            start_next,
-            width=12
-        )
-
-        primary.configure(selected=True)
-
-        primary.pack(
-            side="right"
-        )
 
         if finished == "focus":
 
             self.make_button(
-                bar,
-                "Skip break",
-                skip,
-                width=10
-            ).pack(
-                side="right",
-                padx=8
-            )
+                bar, "Skip break", skip, width=10
+            ).pack(side="left", padx=4)
 
             if task is not None:
 
                 def mark_done():
-
                     self.db.complete_task(task["id"])
                     self.focus_task_id = None
                     win.destroy()
                     self.show_page(self.current_page)
 
                 self.make_button(
-                    bar,
-                    "Mark task done",
-                    mark_done,
-                    width=14
-                ).pack(
-                    side="left"
-                )
+                    bar, "Mark done", mark_done, width=10
+                ).pack(side="left", padx=4)
 
         else:
 
             self.make_button(
-                bar,
-                "Dismiss",
-                win.destroy,
-                width=9
-            ).pack(
-                side="right",
-                padx=8
-            )
+                bar, "Dismiss", win.destroy, width=10, active=RED
+            ).pack(side="left", padx=4)
+
+        primary = self.make_button(
+            bar,
+            "Start break" if finished == "focus" else "Start focus",
+            start_next,
+            width=10
+        )
+
+        primary.configure(selected=True)
+
+        primary.pack(side="left", padx=4)
+
+        self._alert_show(shell)
 
     # --------------------------------------------------------
     # Distraction nudge
@@ -16893,25 +16805,19 @@ class StudesticsApp(tk.Tk):
         win = tk.Toplevel(self)
 
         win.title("Distraction words")
+
+        tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
         win.configure(bg=BG)
         win.transient(self)
         win.grab_set()
 
-        self.center_window(win, 580, 560)
+        self.center_window(win, 580, 564)
 
         words = list(self.nudge_words)
 
-        tk.Label(
-            win,
-            text="Distraction words",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 18, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(24, 4)
-        )
+        self._glow_heading(
+            win, "Distraction words", PURPLE, 18
+        ).pack(anchor="w", padx=28, pady=(24, 4))
 
         tk.Label(
             win,
@@ -17290,100 +17196,55 @@ class StudesticsApp(tk.Tk):
 
         task = self._focus_task()
 
-        win = tk.Toplevel(self)
-
-        win.title("Focus session complete")
-
-        self._attach_alarm(win, True)
-        win.configure(bg=BG)
-        win.attributes("-topmost", True)
-
-        self.center_window(win, 460, 220)
-
-        tk.Label(
-            win,
-            text="Focus session complete",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 18, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(28, 4)
-        )
-
         summary = f"{self._focus_len_text()} done."
 
         if task is not None:
-
             title = task["title"]
-
             if len(title) > 30:
                 title = title[:29] + "…"
-
             summary += f' You were working on "{title}".'
 
-        tk.Label(
-            win,
-            text=summary,
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            wraplength=400,
-            justify="left"
-        ).pack(
-            anchor="w",
-            padx=28
+        shell = self._alert_shell(
+            "Focus", "Focus session complete", GREEN, "check", summary
         )
 
-        bar = tk.Frame(win, bg=BG)
+        win = shell["win"]
 
-        bar.pack(
-            side="bottom",
-            fill="x",
-            padx=28,
-            pady=22
-        )
+        self._attach_alarm(win, True)
+
+        bar = tk.Frame(shell["foot"], bg=BG)
+
+        bar.pack()
 
         self.make_button(
-            bar,
-            "Dismiss",
-            win.destroy,
-            width=9
-        ).pack(
-            side="right"
-        )
+            bar, "Dismiss", win.destroy, width=10, active=RED
+        ).pack(side="left", padx=4)
 
         if task is not None:
 
             def mark_done():
-
                 self.db.complete_task(task["id"])
                 self.focus_task_id = None
                 win.destroy()
                 self.show_page(self.current_page)
 
-            self.make_button(
-                bar,
-                "Mark task done",
-                mark_done,
-                width=14
-            ).pack(
-                side="right",
-                padx=8
+            go = self.make_button(
+                bar, "Mark task done", mark_done, width=14
             )
 
         else:
 
-            self.make_button(
-                bar,
-                "Open app",
+            go = self.make_button(
+                bar, "Open app",
                 lambda: (self.restore_window(), win.destroy()),
-                width=9
-            ).pack(
-                side="right",
-                padx=8
+                width=10
             )
+
+        go.configure(selected=True)
+
+        go.pack(side="left", padx=4)
+
+        self._alert_show(shell)
 
     def update_focus_ui(self):
 
@@ -24495,6 +24356,8 @@ class StudesticsApp(tk.Tk):
 
         update_panel = self._build_update_card()
 
+        background_panel = self._build_background_card()
+
         # Group the cards under headings, in this order.
         order = [
             (self._settings_heading(
@@ -24515,6 +24378,7 @@ class StudesticsApp(tk.Tk):
                 if startup_panel is not None
                 else []
             ),
+            (background_panel, (0, 15)),
             (update_panel, (0, 15)),
             (self._settings_heading(
                 "Focus Mode",
@@ -24537,7 +24401,8 @@ class StudesticsApp(tk.Tk):
         for widget in (
             panel_outer, rem_panel_outer, focus_panel_outer,
             float_panel_outer, data_panel, dev_panel, startup_panel,
-            appearance_panel, sound_panel, update_panel
+            appearance_panel, sound_panel, update_panel,
+            background_panel
         ):
 
             if widget is None:
@@ -24768,16 +24633,17 @@ class StudesticsApp(tk.Tk):
         win = tk.Toplevel(self)
 
         win.title("Theme from picture")
+
+        tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
         win.configure(bg=BG)
         win.resizable(False, False)
         win.transient(self)
         win.grab_set()
 
-        self.center_window(win, 560, 600)
+        self.center_window(win, 560, 604)
 
-        tk.Label(
-            win, text="Theme from picture", bg=BG, fg=TEXT,
-            font=("Segoe UI", 18, "bold")
+        self._glow_heading(
+            win, "Theme from picture", PURPLE, 18
         ).pack(anchor="w", padx=28, pady=(24, 2))
 
         tk.Label(
@@ -25983,6 +25849,80 @@ class StudesticsApp(tk.Tk):
 
         return outer
 
+    def _run_in_background(self):
+
+        try:
+            return self.db.get_setting("run_in_background", "1") != "0"
+        except Exception:
+            return True
+
+    def _build_background_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=18)
+
+        left = tk.Frame(row, bg=PANEL)
+
+        left.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            left,
+            text="Run in background",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            left,
+            text="On: closing the window keeps Studestics in the tray so "
+                 "reminders still fire. Off: closing the window quits the app.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9),
+            wraplength=560,
+            justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        enabled = self._run_in_background()
+
+        self.settings_background_button = self.make_button(
+            row,
+            "On" if enabled else "Off",
+            self.toggle_background,
+            width=8
+        )
+
+        self.settings_background_button.configure(selected=enabled)
+
+        self.settings_background_button.pack(side="right")
+
+        return outer
+
+    def toggle_background(self):
+
+        target = not self._run_in_background()
+
+        try:
+            self.db.set_setting("run_in_background", "1" if target else "0")
+        except Exception:
+            pass
+
+        try:
+            self.settings_background_button.configure(
+                text="On" if target else "Off",
+                selected=target
+            )
+        except Exception:
+            pass
+
     def toggle_startup(self):
 
         target = not startup_enabled()
@@ -26482,41 +26422,36 @@ class StudesticsApp(tk.Tk):
                 "check",
                 BLUE,
                 "Plan your tasks",
-                "Add tasks with a deadline, a priority and a reminder, "
-                "repeating or just once at the time you choose. "
-                "Overdue and due-soon ones stand out so nothing slips."
+                "Add tasks with a deadline and a priority, and get "
+                "reminders you can snooze or finish right from the pop-up."
+            ),
+            (
+                "calendar",
+                PURPLE_HOVER,
+                "Build your week",
+                "Schedule is a weekly timetable with an alarm for each "
+                "block. Or type /schedule in AI Chat and let the AI plan it."
             ),
             (
                 "clock",
-                PURPLE_HOVER,
-                "Stay on one thing",
-                "Pick a task in Focus Mode, start the timer and keep "
-                "going. A small floating clock can follow you around."
-            ),
-            (
-                "note",
                 YELLOW,
-                "Jot things down",
-                "Notes is a simple text editor. Write quick notes, or "
-                "open a .txt file, edit it and save it back. Your draft "
-                "is kept even if you close the app."
+                "Stay on one thing",
+                "Pick a task in Focus Mode and start the timer, or run "
+                "Pomodoro rounds. A small floating clock follows you."
             ),
             (
                 "note",
                 GREEN,
-                "Quiz yourself",
-                "Press Quiz me in Notes and the AI turns your notes "
-                "into a quiz, from 1 to 50 questions. Short on notes? "
-                "In AI Chat type /notes and a topic, and the AI writes "
-                "them into Notes for you."
+                "Notes and quizzes",
+                "Write notes, then press Quiz me and the AI turns them "
+                "into a quiz. Short on notes? Type /notes in AI Chat."
             ),
             (
                 "chat",
                 GREEN,
                 "Ask for help",
-                "Chat with Gemini about your plans, deadlines and study "
-                "topics, or type /notes to save notes. It needs a free "
-                "API key. The next page shows how to get one."
+                "Chat with Gemini about your plans and study topics. "
+                "It needs a free API key, and the next page shows how."
             ),
             (
                 "gear",
@@ -27125,74 +27060,451 @@ class StudesticsApp(tk.Tk):
 
         return keep
 
-    def _small_popup(self, title, heading, lines, buttons):
-        """A small always-on-top popup in the nudge style. `buttons`
-        is a list of (label, command, primary)."""
+    # ---- alert cards: reminders, schedule, deadlines ------------
+
+    @staticmethod
+    def _row_get(row, key, default=""):
+
+        try:
+            value = row[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
+        return default if value is None else value
+
+    def _glow_heading(
+        self, parent, text, accent, size=18, bg=BG, wrap=None
+    ):
+        """A heading whose letters have a dark outline so they pop. Falls back to a plain label if the font
+        or Pillow isn't available."""
+
+        def plain():
+            return tk.Label(
+                parent, text=text, bg=bg, fg=TEXT,
+                font=("Segoe UI", size, "bold"), anchor="w",
+                justify="left", wraplength=wrap or 0
+            )
+
+        if not HAS_PIL:
+            return plain()
+
+        try:
+            from PIL import ImageFilter
+
+            font = None
+            px = max(10, int(round(self.winfo_fpixels("1i") / 72 * size)))
+            big = px * 3
+
+            for path in (
+                "C:/Windows/Fonts/segoeuib.ttf",
+                "C:/Windows/Fonts/seguisb.ttf",
+                "C:/Windows/Fonts/arialbd.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            ):
+                try:
+                    font = ImageFont.truetype(path, big)
+                    break
+                except Exception:
+                    continue
+
+            if font is None:
+                return plain()
+
+            probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+
+            max_w = (wrap or 10000) * 3
+
+            lines, current = [], ""
+
+            for word in text.split(" "):
+                trial = (current + " " + word).strip()
+                if current and probe.textlength(trial, font=font) > max_w:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = trial
+
+            lines.append(current)
+
+            stroke = max(3, int(big * 0.07))
+
+            ascent, descent = font.getmetrics()
+
+            line_h = ascent + descent + stroke
+
+            pad = int(big * 0.14)
+
+            pad_y = stroke + 4
+
+            width = int(
+                max(probe.textlength(l, font=font) for l in lines)
+            ) + pad * 2
+
+            height = line_h * len(lines) + pad_y * 2
+
+            def layer(**kw):
+                img = Image.new("L", (width, height), 0)
+                d = ImageDraw.Draw(img)
+                for n, line in enumerate(lines):
+                    d.text((pad, pad_y + n * line_h), line, font=font,
+                           fill=255, **kw)
+                return img
+
+            ring = layer(stroke_width=stroke)
+            fill = layer()
+
+            canvas = Image.new("RGB", (width, height), _hex_rgb(bg))
+
+            tint = Image.new("RGB", (width, height), (8, 8, 14))
+
+            canvas.paste(tint, (0, 0), ring)
+            canvas.paste(
+                Image.new("RGB", (width, height), _hex_rgb(TEXT)),
+                (0, 0), fill
+            )
+
+            canvas = canvas.resize(
+                (width // 3, height // 3), Image.LANCZOS
+            )
+
+            photo = ImageTk.PhotoImage(canvas)
+
+            label = tk.Label(parent, image=photo, bg=bg, bd=0, anchor="w")
+
+            label.image = photo
+
+            return label
+
+        except Exception:
+            return plain()
+
+    def _form_header(
+        self, win, kicker, heading, icon, pady=(22, 16), padx=28,
+        accent=PURPLE
+    ):
+        """Badge + small label + big heading, like the alert cards."""
+
+        head = tk.Frame(win, bg=BG)
+
+        head.pack(fill="x", padx=padx, pady=pady)
+
+        photo = self._alert_badge(icon, accent, 48)
+
+        badge = tk.Label(head, image=photo, bg=BG, bd=0)
+
+        badge.image = photo
+
+        badge.pack(side="left")
+
+        column = tk.Frame(head, bg=BG)
+
+        column.pack(side="left", padx=(14, 0))
+
+        tk.Label(
+            column, text=kicker.upper(), bg=BG, fg=accent,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+
+        self._glow_heading(
+            column, heading, accent, 19
+        ).pack(anchor="w")
+
+        return head
+
+    def _alert_badge(self, icon, accent, size=56):
+        """Round tinted badge with a glyph, drawn at 4x for smooth
+        edges."""
+
+        scale = 4
+
+        big = size * scale
+
+        img = Image.new("RGBA", (big, big), _hex_rgb(BG) + (255,))
+
+        ImageDraw.Draw(img).ellipse(
+            [0, 0, big - 1, big - 1],
+            fill=_hex_rgb(mix_color(accent, BG, 0.80))
+        )
+
+        img = img.resize((size, size), Image.LANCZOS)
+
+        glyph = nav_icon_image(icon, accent, 26)
+
+        img.paste(glyph, ((size - 26) // 2, (size - 26) // 2), glyph)
+
+        return ImageTk.PhotoImage(img)
+
+    def _alert_shell(
+        self, kicker, heading, accent, icon, subtitle="", width=500
+    ):
+        """The look shared by every alert: a coloured top edge, a
+        round badge, a small label, a big heading and a quiet line
+        under it, with room for rows and a button area."""
 
         win = tk.Toplevel(self)
-
-        win.title(title)
+        win.withdraw()
+        win._glow = accent
         win.configure(bg=BG)
         win.attributes("-topmost", True)
+        win.resizable(False, False)
 
-        self.center_window(win, 480, 170 + 24 * len(lines))
+        strip = tk.Frame(win, bg=accent, height=4)
+
+        strip.pack(fill="x")
+
+        foot = tk.Frame(win, bg=BG)
+
+        foot.pack(side="bottom", fill="x", padx=28, pady=(14, 20))
+
+        tk.Frame(win, bg=BORDER, height=1).pack(side="bottom", fill="x")
+
+        head = tk.Frame(win, bg=BG)
+
+        head.pack(fill="x", padx=28, pady=(22, 0))
+
+        photo = self._alert_badge(icon, accent)
+
+        badge = tk.Label(head, image=photo, bg=BG, bd=0)
+
+        badge.image = photo
+
+        badge.pack(side="left", anchor="center")
+
+        column = tk.Frame(head, bg=BG)
+
+        column.pack(side="left", fill="x", expand=True, padx=(16, 0))
+
+        kicker_label = tk.Label(
+            column, text=kicker.upper(), bg=BG, fg=accent,
+            font=("Segoe UI", 11, "bold")
+        )
+
+        kicker_label.pack(anchor="w")
+
+        title_label = self._glow_heading(
+            column, heading, accent, 20, wrap=width - 130
+        )
+
+        title_label.pack(anchor="w", fill="x")
+
+        sub_label = tk.Label(
+            column, text=subtitle, bg=BG, fg=MUTED,
+            font=("Segoe UI", 10), anchor="w", justify="left",
+            wraplength=width - 130
+        )
+
+        if subtitle:
+            sub_label.pack(anchor="w", fill="x", pady=(2, 0))
+
+        body = tk.Frame(win, bg=BG)
+
+        body.pack(fill="x", padx=28, pady=(16, 0))
+
+        win.bind("<Escape>", lambda e: win.destroy())
+
+        return {
+            "win": win, "strip": strip, "foot": foot, "body": body,
+            "kicker": kicker_label, "title": title_label,
+            "sub": sub_label, "width": width
+        }
+
+    def _alert_show(self, shell):
+        """Size, centre and fade the card in."""
+
+        win = shell["win"]
+
+        win.update_idletasks()
+
+        width = shell["width"]
+
+        height = win.winfo_reqheight() + 4
+        x = max(0, (win.winfo_screenwidth() - width) // 2)
+        y = max(0, (win.winfo_screenheight() - height) // 2 - 30)
+        geo = f"{width}x{height}+{x}+{y}"
+        def strip_buttons():
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
+                style = user32.GetWindowLongW(hwnd, -16)
+                user32.SetWindowLongW(
+                    hwnd, -16, style & ~(0x20000 | 0x10000)
+                )
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x37)
+            except Exception:
+                pass
+
+        win.geometry(geo)
+        strip_buttons()
+        win.deiconify()
+        win.after(60, strip_buttons)
+        win.geometry(geo)
+        win.after(40, lambda: win.winfo_exists() and win.geometry(geo))
+
+
+    def _alert_row(
+        self, parent, accent, title, meta="", meta_color=None, action=None
+    ):
+        """One item card: rounded, with a coloured edge, the title, a
+        small line under it and an optional button on the right that
+        sits on its own darker pill."""
+
+        row, card = self.rounded_panel(
+            parent, radius=12, accent=accent, fit=True
+        )
+
+        row.pack(fill="x", pady=4)
+
+        if action is not None:
+
+            label, command = action
+
+            holder = tk.Frame(card, bg=PANEL)
+
+            holder.pack(side="right", padx=(0, 10), pady=8)
+
+            button = self.make_button(holder, label, command, width=6)
+
+            # Darker than the card, so it reads as set into it.
+            button.idle_color = mix_color(PANEL, BG, 0.6)
+
+            button._redraw()
+
+            button.pack()
+
+        column = tk.Frame(card, bg=PANEL)
+
+        column.pack(
+            side="left", fill="x", expand=True, padx=(14, 6), pady=10
+        )
+
+        if len(title) > 34:
+            title = title[:33] + "…"
+
+        tk.Label(
+            column, text=title, bg=PANEL, fg=TEXT,
+            font=("Segoe UI", 11, "bold"), anchor="w"
+        ).pack(anchor="w")
+
+        meta_label = None
+
+        if meta:
+            meta_label = tk.Label(
+                column, text=meta, bg=PANEL, fg=meta_color or MUTED_2,
+                font=("Segoe UI", 9), anchor="w"
+            )
+            meta_label.pack(anchor="w")
+
+        return row, meta_label
+
+    def _alert_snooze_row(self, foot, minutes_list, command, mute=None):
+        """'Snooze  5m 10m 30m' pills, and an optional Mute."""
+
+        outer = tk.Frame(foot, bg=BG)
+
+        outer.pack(fill="x", pady=(0, 12))
+
+        line = tk.Frame(outer, bg=BG)
+
+        line.pack()
+
+        tk.Label(
+            line, text="Snooze", bg=BG, fg=MUTED,
+            font=("Segoe UI", 9)
+        ).pack(side="left", padx=(0, 10))
+
+        for minutes in minutes_list:
+
+            text = f"{minutes}m" if minutes < 60 else f"{minutes // 60}h"
+
+            self.make_button(
+                line, text, lambda m=minutes: command(m), width=4
+            ).pack(side="left", padx=(0, 6))
+
+        if mute is not None:
+
+            self.make_button(line, "Mute", mute, width=6).pack(
+                side="left", padx=(10, 0)
+            )
+
+        return line
+
+    def _start_focus_from_alert(self, task_id=None):
+
+        try:
+
+            if task_id is not None:
+                self.focus_task_id = task_id
+
+            self.restore_window()
+
+            self.show_page("Focus Mode")
+
+            if not self.focus_running:
+                self.after(350, self.toggle_focus)
+
+        except Exception:
+            pass
+
+    def _small_popup(
+        self, title, heading, lines, buttons, accent=None, icon="clock"
+    ):
+        """A small always-on-top alert in the shared card style.
+        `buttons` is a list of (label, command, primary)."""
+
+        if accent is None:
+
+            low = heading.lower()
+
+            accent = RED if ("reached" in low or "removed" in low) else YELLOW
+
+        shell = self._alert_shell(title, heading, accent, icon)
+
+        win = shell["win"]
+
+        win.title(title)
 
         self._nudge_beep()
 
-        tk.Label(
-            win,
-            text=heading,
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 16, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(24, 8)
-        )
+        if lines:
 
-        bar = tk.Frame(win, bg=BG)
+            card = tk.Frame(shell["body"], bg=PANEL_2)
 
-        bar.pack(
-            side="bottom",
-            fill="x",
-            padx=28,
-            pady=20
-        )
+            card.pack(fill="x")
+
+            tk.Frame(card, bg=accent, width=4).pack(side="left", fill="y")
+
+            inner = tk.Frame(card, bg=PANEL_2)
+
+            inner.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+
+            for line in lines:
+
+                tk.Label(
+                    inner, text=line, bg=PANEL_2,
+                    fg=TEXT if line else MUTED, font=("Segoe UI", 10),
+                    anchor="w", justify="left", wraplength=400
+                ).pack(anchor="w", pady=1)
+
+        bar = tk.Frame(shell["foot"], bg=BG)
+
+        bar.pack(fill="x")
 
         for label, command, primary in reversed(buttons):
 
             button = self.make_button(
-                bar,
-                label,
+                bar, label,
                 lambda c=command: (c(), win.destroy()),
-                width=10
+                width=10,
+                active=RED if label == "Dismiss" else PURPLE_HOVER
             )
 
             if primary:
                 button.configure(selected=True)
 
-            button.pack(
-                side="right",
-                padx=(8, 0)
-            )
+            button.pack(side="right", padx=(8, 0))
 
-        for line in lines:
-
-            tk.Label(
-                win,
-                text=line,
-                bg=BG,
-                fg=MUTED,
-                font=("Segoe UI", 10),
-                anchor="w",
-                justify="left",
-                wraplength=420
-            ).pack(
-                anchor="w",
-                padx=28,
-                pady=1
-            )
+        self._alert_show(shell)
 
         return win
 
@@ -28244,6 +28556,8 @@ class StudesticsApp(tk.Tk):
 
         self._update_popup = win
 
+        tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
+
         win.title(title)
         win.configure(bg=BG)
         win.resizable(False, False)
@@ -28735,7 +29049,14 @@ class StudesticsApp(tk.Tk):
 
         try:
 
+            was_hidden = self.state() == "withdrawn"
+
             self.deiconify()
+
+            # Tk brings a hidden maximised window back as a normal one.
+            if was_hidden and getattr(self, "_was_zoomed", False):
+                self.state("zoomed")
+
             self.lift()
             self.focus_force()
 
@@ -28743,8 +29064,8 @@ class StudesticsApp(tk.Tk):
             pass
 
     def show_reminder(self, tasks):
-        """Alarm-style popup: beeps, then stays on top until dealt
-        with — even if the main window is hidden in the tray."""
+        """Task reminder card: beeps, then stays on top until dealt
+        with, even if the main window is hidden in the tray."""
 
         if self._reminder_popup is not None:
 
@@ -28755,165 +29076,142 @@ class StudesticsApp(tk.Tk):
 
             self._reminder_popup = None
 
-        shown = list(tasks[:4])
-        extra = len(tasks) - len(shown)
-
-        win = tk.Toplevel(self)
-        self._reminder_popup = win
-
-        # Low-priority reminders beep once; Medium and High keep
-        # ringing until you deal with the popup.
-        self._attach_alarm(
-            win,
-            any(t["priority"] in ("Medium", "High") for t in tasks)
-        )
-
-        win.title("Studestics reminder")
-        win.configure(bg=BG)
-        win.attributes("-topmost", True)
-
-        self.center_window(
-            win,
-            480,
-            235 + 46 * len(shown) + (24 if extra else 0)
-        )
-
-        tk.Label(
-            win,
-            text="Reminder",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 20, "bold")
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(24, 2)
-        )
+        tasks = list(tasks)
 
         count = len(tasks)
 
-        tk.Label(
-            win,
-            text=(
-                "1 task still needs you."
-                if count == 1
-                else f"{count} tasks still need you."
-            ),
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 10)
-        ).pack(
-            anchor="w",
-            padx=28,
-            pady=(0, 14)
-        )
+        rank = {"High": 3, "Medium": 2}
 
-        bar = tk.Frame(
-            win,
-            bg=BG
-        )
+        top = max(tasks, key=lambda t: rank.get(t["priority"], 1))
 
-        bar.pack(
-            side="bottom",
-            fill="x",
-            padx=28,
-            pady=20
-        )
+        accent = priority_color(top["priority"])
 
-        rows = tk.Frame(
-            win,
-            bg=BG
-        )
+        def meta_of(task):
+            """('High priority  ·  Overdue by 12 min', colour)"""
 
-        rows.pack(
-            fill="x",
-            padx=28
-        )
+            state, label, color = due_info(self._row_get(task, "deadline"))
 
-        def finish(task_id, row):
+            text = f"{task['priority']} priority"
+
+            if label:
+                text += f"   ·   {label}"
+
+            return text, (color or MUTED_2)
+
+        if count == 1:
+
+            heading = top["title"]
+
+            if len(heading) > 30:
+                heading = heading[:29] + "…"
+
+            subtitle = ""
+
+        else:
+
+            heading = f"{count} tasks need you"
+
+            subtitle = "Still waiting for you."
+
+        shell = self._alert_shell("Reminder", heading, accent, "bell", subtitle)
+
+        win = shell["win"]
+
+        self._reminder_popup = win
+
+        win.title("Studestics reminder")
+
+        loud = any(t["priority"] in ("Medium", "High") for t in tasks)
+
+        # Low-priority reminders beep once; Medium and High keep
+        # ringing until you deal with the card.
+        self._attach_alarm(win, loud)
+
+        body = shell["body"]
+
+        live = []
+
+        def finish(task_id, row=None):
 
             self.stop_alarm()
 
             if task_id is not None:
 
                 self.db.complete_task(task_id)
+
                 self.show_page(self.current_page)
 
-            row.destroy()
+            if row is not None:
 
-            if not rows.winfo_children():
+                row.destroy()
+
+                if not [w for w in body.winfo_children() if w.winfo_exists()]:
+                    win.destroy()
+
+            else:
+
                 win.destroy()
 
-        for task in shown:
+        if count == 1:
 
-            row = tk.Frame(
-                rows,
-                bg=PANEL_2
-            )
+            text, color = meta_of(top)
 
-            row.pack(
-                fill="x",
-                pady=3
-            )
+            shell["sub"].configure(text=text, fg=color)
 
-            tk.Label(
-                row,
-                text="●",
-                bg=PANEL_2,
-                fg=priority_color(task["priority"]),
-                font=("Segoe UI", 8)
-            ).pack(
-                side="left",
-                padx=(12, 6),
-                pady=10
-            )
+            shell["sub"].pack(anchor="w", fill="x", pady=(2, 0))
 
-            title = task["title"]
+            live.append((top, shell["sub"], "title"))
 
-            if len(title) > 32:
-                title = title[:31] + "…"
+        else:
 
-            tk.Label(
-                row,
-                text=title,
-                bg=PANEL_2,
-                fg=TEXT,
-                font=("Segoe UI", 10, "bold"),
-                anchor="w"
-            ).pack(
-                side="left",
-                fill="x",
-                expand=True
-            )
+            for task in tasks[:4]:
 
-            if task["id"] is not None:
+                text, color = meta_of(task)
 
-                self.make_button(
-                    row,
-                    "Done",
-                    lambda tid=task["id"], r=row: finish(tid, r),
-                    width=6
-                ).pack(
-                    side="right",
-                    padx=8,
-                    pady=6
+                row, meta_label = self._alert_row(
+                    body, priority_color(task["priority"]), task["title"],
+                    text, color
                 )
 
-        if extra:
+                if task["id"] is not None:
 
-            tk.Label(
-                win,
-                text=f"+ {extra} more",
-                bg=BG,
-                fg=MUTED_2,
-                font=("Segoe UI", 9)
-            ).pack(
-                anchor="w",
-                padx=30,
-                pady=(4, 0)
-            )
+                    self.make_button(
+                        row, "Done",
+                        lambda tid=task["id"], r=row: finish(tid, r),
+                        width=6
+                    ).pack(side="right", padx=10, pady=8)
 
-        def snooze():
+                live.append((task, meta_label, "row"))
+
+            if count > 4:
+
+                tk.Label(
+                    body, text=f"+ {count - 4} more", bg=BG, fg=MUTED_2,
+                    font=("Segoe UI", 9)
+                ).pack(anchor="w", pady=(4, 0))
+
+        # Keep "Overdue by 12 min" honest while the card is open.
+        def tick():
+
+            try:
+
+                if not win.winfo_exists():
+                    return
+
+                for task, label, _kind in live:
+
+                    text, color = meta_of(task)
+
+                    label.configure(text=text, fg=color)
+
+                win.after(20000, tick)
+
+            except Exception:
+                pass
+
+        win.after(20000, tick)
+
+        def snooze(minutes):
 
             for task in tasks:
 
@@ -28922,46 +29220,62 @@ class StudesticsApp(tk.Tk):
 
                 interval = self.reminder_interval_minutes(task) * 60
 
-                # Make it come due again in 10 minutes.
+                # Make it come due again after `minutes`.
                 self._reminder_last[task["id"]] = (
-                    time.time() - interval + 600
+                    time.time() - interval + minutes * 60
                 )
 
             win.destroy()
 
-        def open_app():
+        foot = shell["foot"]
 
+        self._alert_snooze_row(
+            foot, (5, 10, 30, 60), snooze,
+            mute=self.stop_alarm if loud else None
+        )
+
+        bar = tk.Frame(foot, bg=BG)
+
+        bar.pack()
+
+        first_id = next(
+            (t["id"] for t in tasks if t["id"] is not None), None
+        )
+
+        def open_app():
             self.restore_window()
             self.show_page("Tasks")
             win.destroy()
 
         self.make_button(
-            bar,
-            "Dismiss",
-            win.destroy,
-            width=9
+            bar, "Dismiss", win.destroy, width=9, active=RED
         ).pack(
-            side="right"
+            side="left", padx=4
         )
 
-        self.make_button(
-            bar,
-            "Snooze 10 min",
-            snooze,
-            width=12
-        ).pack(
-            side="right",
-            padx=8
-        )
+        if first_id is not None and count == 1:
+            self.make_button(
+                bar, "Done", lambda: finish(first_id), width=9
+            ).pack(side="left", padx=4)
 
-        self.make_button(
-            bar,
-            "Open app",
-            open_app,
-            width=9
-        ).pack(
-            side="right"
-        )
+        if first_id is not None:
+            self.make_button(bar, "Open app", open_app, width=9).pack(
+                side="left", padx=4
+            )
+            go = self.make_button(
+                bar, "Start focus",
+                lambda: (self._start_focus_from_alert(first_id),
+                         win.destroy()),
+                width=9
+            )
+        else:
+            go = self.make_button(bar, "Open app", open_app, width=9)
+
+        go.configure(selected=True)
+
+        go.pack(side="left", padx=4)
+
+        self._alert_show(shell)
 
     def test_reminder(self):
 
@@ -29250,7 +29564,21 @@ class StudesticsApp(tk.Tk):
 
         win.after(100, watch)
 
+    def _remember_window_state(self):
+        """Remember whether the window was maximised, for next launch."""
+
+        try:
+            state = self.state()
+            if state in ("zoomed", "normal"):
+                self._was_zoomed = (state == "zoomed")
+            if state in ("zoomed", "normal") and self.db:
+                self.db.set_setting("window_state", state)
+        except Exception:
+            pass
+
     def hide_to_tray(self):
+
+        self._remember_window_state()
 
         self.withdraw()
 
@@ -29331,6 +29659,7 @@ class StudesticsApp(tk.Tk):
             and HAS_PIL
             and not self._quitting
             and self.db is not None
+            and self._run_in_background()
         ):
 
             self.hide_to_tray()
@@ -29339,6 +29668,8 @@ class StudesticsApp(tk.Tk):
         self.quit_app()
 
     def quit_app(self):
+
+        self._remember_window_state()
 
         self._quitting = True
 
