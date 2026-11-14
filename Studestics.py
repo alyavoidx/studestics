@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -2009,6 +2009,24 @@ class DeadlineState:
 
         self.sel = cur.replace(minute=(cur.minute + step) % 60)
 
+    def set_minutes(self, minutes):
+
+        cur = self._ensure()
+
+        minutes = max(0, min(24 * 60 - 1, int(minutes)))
+
+        self.sel = cur.replace(hour=minutes // 60, minute=minutes % 60)
+
+    def hour24(self):
+
+        return (self.sel or self._ensure()).hour
+
+    def minutes(self):
+
+        cur = self.sel or self._ensure()
+
+        return cur.hour * 60 + cur.minute
+
     def toggle_ampm(self):
 
         cur = self._ensure()
@@ -3758,6 +3776,223 @@ def emoji_image(cluster, size):
     _EMOJI_CACHE[key] = result
 
     return result
+
+
+_OrigLabel = tk.Label
+
+_TEXT_FONTS = {
+    False: (
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    ),
+    True: (
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    )
+}
+
+
+class EmojiLabel(_OrigLabel):
+    """A normal Label, except that text containing emoji is drawn as a
+    picture (text and colour emoji together), because Tk itself shows
+    emoji as empty boxes on Windows."""
+
+    def __init__(self, master=None, cnf=None, **kw):
+
+        self._etext = None
+        self._ephoto = None
+
+        text = kw.get("text")
+
+        super().__init__(master, cnf or {}, **kw)
+
+        if isinstance(text, str) and has_emoji(text):
+            self._etext = text
+            self._erender()
+
+    def configure(self, cnf=None, **kw):
+
+        if isinstance(cnf, dict):
+            kw = {**cnf, **kw}
+
+        if cnf is not None and not isinstance(cnf, dict):
+            return super().configure(cnf)
+
+        if not kw:
+            return super().configure()
+
+        redraw = any(
+            k in kw for k in (
+                "text", "fg", "foreground", "bg", "background", "font",
+                "wraplength", "justify"
+            )
+        )
+
+        if "text" in kw:
+
+            value = kw["text"]
+
+            if isinstance(value, str) and has_emoji(value):
+                self._etext = value
+            else:
+                if self._etext is not None:
+                    kw["image"] = ""
+                self._etext = None
+                self._ephoto = None
+
+        result = super().configure(**kw)
+
+        if self._etext is not None and redraw:
+            self._erender()
+
+        return result
+
+    config = configure
+
+    def cget(self, key):
+
+        if key == "text" and self._etext is not None:
+            return self._etext
+
+        return super().cget(key)
+
+    def _erender(self):
+
+        try:
+            text = self._etext
+
+            rgb = lambda c: tuple(v >> 8 for v in self.winfo_rgb(c))
+
+            fg = rgb(super().cget("fg"))
+            bg = rgb(super().cget("bg"))
+
+            font = tkfont.Font(self, font=super().cget("font"))
+            info = font.actual()
+
+            size = info["size"]
+
+            px = abs(size) if size < 0 else int(
+                round(size * self.winfo_fpixels("1i") / 72)
+            )
+
+            bold = info.get("weight") == "bold"
+
+            S = 3
+            P = px * S
+
+            ttf = None
+
+            for path in _TEXT_FONTS[bold]:
+                try:
+                    ttf = ImageFont.truetype(path, P)
+                    break
+                except Exception:
+                    continue
+
+            if ttf is None:
+                raise RuntimeError("no font")
+
+            wrap = 0
+            try:
+                wrap = int(float(super().cget("wraplength")))
+            except Exception:
+                pass
+
+            max_w = wrap * S if wrap > 0 else 10 ** 6
+
+            probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+
+            emo = int(P * 1.0)
+
+            def width_of(piece, is_emoji):
+                if is_emoji:
+                    return emo + int(P * 0.08)
+                return probe.textlength(piece, font=ttf)
+
+            # Break into words (emoji count as their own word).
+            tokens = []
+
+            for piece, is_emoji in emoji_segments(text):
+                if is_emoji:
+                    tokens.append((piece, True))
+                else:
+                    for n, word in enumerate(re.split(r"( )", piece)):
+                        if word:
+                            tokens.append((word, False))
+
+            lines, line, line_w = [], [], 0
+
+            for piece, is_emoji in tokens:
+                w = width_of(piece, is_emoji)
+                if (
+                    line and line_w + w > max_w
+                    and not (piece == " ")
+                ):
+                    while line and line[-1][0] == " ":
+                        line_w -= width_of(*line.pop())
+                    lines.append((line, line_w))
+                    line, line_w = [], 0
+                    if piece == " ":
+                        continue
+                line.append((piece, is_emoji))
+                line_w += w
+
+            lines.append((line, line_w))
+
+            ascent, descent = ttf.getmetrics()
+
+            line_h = int((ascent + descent) * 1.08)
+
+            width = max(1, int(max(w for _l, w in lines))) + 4
+
+            height = line_h * len(lines) + 4
+
+            img = Image.new("RGB", (width, height), bg)
+
+            d = ImageDraw.Draw(img)
+
+            centre = str(super().cget("justify")) == "center"
+
+            for n, (items, w) in enumerate(lines):
+
+                x = (width - w) / 2 if centre else 2
+
+                base = 2 + n * line_h + ascent
+
+                for piece, is_emoji in items:
+                    if is_emoji:
+                        tile = emoji_image(piece, emo)
+                        if tile is not None:
+                            img.paste(
+                                tile,
+                                (
+                                    int(x),
+                                    int(base - P * 0.33 - emo / 2)
+                                ),
+                                tile
+                            )
+                    else:
+                        d.text((x, base), piece, font=ttf, fill=fg,
+                               anchor="ls")
+                    x += width_of(piece, is_emoji)
+
+            img = img.resize(
+                (max(1, width // S), max(1, height // S)), Image.LANCZOS
+            )
+
+            self._ephoto = ImageTk.PhotoImage(img)
+
+            super().configure(
+                image=self._ephoto, text="", compound="center"
+            )
+
+        except Exception:
+            self._etext_failed = True
+
+
+tk.Label = EmojiLabel
 
 
 # ============================================================
@@ -5631,6 +5866,45 @@ class StudesticsApp(tk.Tk):
             highlightcolor=PURPLE,
             font=("Segoe UI", 10)
         )
+
+    def make_title_box(self, parent):
+        """A one-line title box that can hold emoji (the :name: menu
+        works in it too). Read it with emoji_read, fill it with
+        emoji_write."""
+
+        box = tk.Text(
+            parent,
+            height=1,
+            wrap="none",
+            undo=True,
+            bg=PANEL_2,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            bd=0,
+            padx=6,
+            pady=9,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=PURPLE,
+            font=("Segoe UI", 10)
+        )
+
+        self.emoji_attach(box)
+
+        def enter(event):
+            if self._emoji_visible() and self._emoji_w is box:
+                return self._emoji_key(0)
+            return "break"
+
+        box.bind("<Return>", enter)
+        box.bind("<Tab>", lambda e: (box.tk_focusNext().focus_set(), "break")[1])
+        box.bind(
+            "<ISO_Left_Tab>",
+            lambda e: (box.tk_focusPrev().focus_set(), "break")[1]
+        )
+
+        return box
 
     def clear_page(self):
 
@@ -8267,6 +8541,55 @@ class StudesticsApp(tk.Tk):
             ring
         )
 
+    def _canvas_text(self, canvas, x, y, **kw):
+        """canvas.create_text that also draws colour emoji."""
+
+        text = kw.get("text", "")
+
+        if not (isinstance(text, str) and has_emoji(text)):
+            return canvas.create_text(x, y, **kw)
+
+        font = kw.get("font")
+        fill = kw.get("fill", TEXT)
+        anchor = kw.get("anchor", "nw")
+        tags = kw.get("tags", "")
+
+        line = font.metrics("linespace")
+
+        top = y - line if anchor.startswith("s") else (
+            y - line / 2 if anchor in ("w", "e", "center") else y
+        )
+
+        size = max(10, int(line * 0.76))
+
+        if not hasattr(canvas, "_etext_photos"):
+            canvas._etext_photos = []
+
+        cursor = x
+
+        for piece, is_emoji in emoji_segments(text):
+            if is_emoji:
+                pil = emoji_image(piece, size)
+                if pil is not None and fill == "#0A0A12":
+                    # The outline copy: the emoji's shape in dark.
+                    shadow = Image.new("RGBA", pil.size, (10, 10, 18, 255))
+                    shadow.putalpha(pil.getchannel("A"))
+                    pil = shadow
+                if pil is not None:
+                    photo = ImageTk.PhotoImage(pil)
+                    canvas._etext_photos.append(photo)
+                    canvas.create_image(
+                        cursor, top + (line - size) / 2, anchor="nw",
+                        image=photo, tags=tags
+                    )
+                cursor += size + 2
+            elif piece:
+                canvas.create_text(
+                    cursor, top, anchor="nw", text=piece, font=font,
+                    fill=fill, tags=tags
+                )
+                cursor += font.measure(piece)
+
     def _task_card_canvas(
         self,
         parent,
@@ -8438,6 +8761,7 @@ class StudesticsApp(tk.Tk):
             canvas.card_photo = photo
 
             canvas.delete("card_bg", "card_text")
+            canvas._etext_photos = []
 
             def outlined(x, y, **kw):
                 if has_photo:
@@ -8447,8 +8771,8 @@ class StudesticsApp(tk.Tk):
                         (-2, 0), (2, 0), (0, -2), (0, 2),
                         (-1, -1), (1, -1), (-1, 1), (1, 1)
                     ):
-                        canvas.create_text(x + dx, y + dy, **dark)
-                canvas.create_text(x, y, **kw)
+                        self._canvas_text(canvas, x + dx, y + dy, **dark)
+                self._canvas_text(canvas, x, y, **kw)
 
 
             canvas.create_image(
@@ -8651,13 +8975,14 @@ class StudesticsApp(tk.Tk):
                     lift
                 )
 
-            mask = Image.new("L", (width, card_height), 0)
-
-            ImageDraw.Draw(mask).rounded_rectangle(
-                [0, 0, width - 1, card_height - 1],
-                radius=radius,
+            # Drawn at 4x and scaled down, so the corners are smooth.
+            mask_big = Image.new("L", (width * 4, card_height * 4), 0)
+            ImageDraw.Draw(mask_big).rounded_rectangle(
+                [0, 0, width * 4 - 1, card_height * 4 - 1],
+                radius=radius * 4,
                 fill=255
             )
+            mask = mask_big.resize((width, card_height), Image.LANCZOS)
 
             # Corners show the surrounding panel color, so they blend
             # in instead of leaving a visible dark square.
@@ -8851,18 +9176,14 @@ class StudesticsApp(tk.Tk):
             anchor="w"
         )
 
-        title = self.make_entry(
-            form
-        )
+        title = self.make_title_box(form)
 
-        title.pack(
-            fill="x",
-            ipady=8,
-            pady=(5, 12)
-        )
+        title.pack(fill="x", pady=(5, 12))
 
         if editing:
-            title.insert(0, task["title"])
+            self.emoji_write(title, task["title"])
+            title.mark_set("insert", "end-1c")
+            title.see("insert")
 
         tk.Label(
             form,
@@ -8892,6 +9213,8 @@ class StudesticsApp(tk.Tk):
 
         if editing:
             self.emoji_write(description, task["description"] or "")
+            description.mark_set("insert", "end-1c")
+            description.see("insert")
 
         tk.Label(
             form,
@@ -9232,9 +9555,7 @@ class StudesticsApp(tk.Tk):
 
         def save():
 
-            task_title = (
-                title.get().strip()
-            )
+            task_title = self.emoji_read(title).strip()
 
             if not task_title:
 
@@ -9430,10 +9751,7 @@ class StudesticsApp(tk.Tk):
 
         time_label.pack(anchor="center", pady=(0, 12))
 
-        hour_text = tk.StringVar()
-        minute_text = tk.StringVar()
-
-        def redraw():
+        def redraw(force=False):
 
             cal.delete("all")
 
@@ -9512,10 +9830,18 @@ class StudesticsApp(tk.Tk):
             day_label.configure(text=line1)
             time_label.configure(text=line2)
 
-            hour_text.set(f"{state.hour12():02d}")
-            minute_text.set(f"{state.minute():02d}")
-
             try:
+
+                focused = frame.focus_get()
+
+                for entry, text in (
+                    (hour_entry, f"{state.hour12():02d}"),
+                    (minute_entry, f"{state.minute():02d}")
+                ):
+
+                    if force or focused is not entry:
+                        entry.delete(0, "end")
+                        entry.insert(0, text)
 
                 ampm_button.configure(text=state.ampm())
 
@@ -9599,39 +9925,85 @@ class StudesticsApp(tk.Tk):
             fg=MUTED
         ).pack(anchor="center", pady=(16, 6))
 
-        def stepper(parent, text_var, down, up):
+        def clock_box(parent, limit, down, up, commit):
 
             box = tk.Frame(parent, bg=BG)
 
             self.make_button(
-                box, "\u2212", lambda: (down(), redraw()), width=2
+                box, "\u2212", lambda: (down(), redraw(True)), width=2
             ).pack(side="left")
 
-            tk.Label(
-                box,
-                textvariable=text_var,
-                bg=BG,
-                fg=TEXT,
-                width=3,
-                font=("Segoe UI", 12, "bold")
-            ).pack(side="left")
+            entry = self.make_entry(box)
+
+            entry.configure(width=3, justify="center")
+
+            entry.pack(side="left", padx=6, ipady=5)
 
             self.make_button(
-                box, "+", lambda: (up(), redraw()), width=2
+                box, "+", lambda: (up(), redraw(True)), width=2
             ).pack(side="left")
 
-            return box
+            def finish(*_):
+
+                digits = "".join(c for c in entry.get() if c.isdigit())
+
+                if digits:
+                    commit(int(digits))
+
+                redraw(True)
+
+            def arrow(step):
+
+                (up if step > 0 else down)()
+
+                redraw(True)
+
+                return "break"
+
+            entry.bind("<FocusOut>", finish)
+            entry.bind("<Return>", finish)
+            entry.bind("<Up>", lambda e: arrow(1))
+            entry.bind("<Down>", lambda e: arrow(-1))
+            entry.bind(
+                "<MouseWheel>", lambda e: arrow(1 if e.delta > 0 else -1)
+            )
+            entry.bind(
+                "<FocusIn>",
+                lambda e: entry.after(
+                    10, lambda: entry.select_range(0, "end")
+                )
+            )
+
+            return box, entry
+
+        def commit_hour(value):
+
+            pm = state.ampm() == "PM"
+
+            value = max(1, min(12, value))
+
+            state.set_minutes(
+                ((value % 12) + (12 if pm else 0)) * 60 + state.minute()
+            )
+
+        def commit_minute(value):
+
+            state.set_minutes(
+                state.hour24() * 60 + max(0, min(59, value))
+            )
 
         time_row = tk.Frame(side, bg=BG)
 
         time_row.pack(anchor="w")
 
-        stepper(
-            time_row,
-            hour_text,
+        hour_box, hour_entry = clock_box(
+            time_row, 12,
             lambda: state.bump_hour(-1),
-            lambda: state.bump_hour(1)
-        ).pack(side="left")
+            lambda: state.bump_hour(1),
+            commit_hour
+        )
+
+        hour_box.pack(side="left")
 
         tk.Label(
             time_row,
@@ -9641,17 +10013,19 @@ class StudesticsApp(tk.Tk):
             font=("Segoe UI", 13, "bold")
         ).pack(side="left", padx=4)
 
-        stepper(
-            time_row,
-            minute_text,
+        minute_box, minute_entry = clock_box(
+            time_row, 59,
             lambda: state.bump_minute(-5),
-            lambda: state.bump_minute(5)
-        ).pack(side="left")
+            lambda: state.bump_minute(5),
+            commit_minute
+        )
+
+        minute_box.pack(side="left")
 
         ampm_button = self.make_button(
             time_row,
             state.ampm(),
-            lambda: (state.toggle_ampm(), redraw()),
+            lambda: (state.toggle_ampm(), redraw(True)),
             width=4
         )
 
@@ -10256,6 +10630,7 @@ class StudesticsApp(tk.Tk):
             canvas.card_photo = photo
 
             canvas.delete("card_bg", "card_text")
+            canvas._etext_photos = []
 
             canvas.create_image(
                 0, 0, anchor="nw", image=photo, tags="card_bg"
@@ -10266,7 +10641,8 @@ class StudesticsApp(tk.Tk):
                 width - pill_w - pill_margin - 18 - 24
             )
 
-            canvas.create_text(
+            self._canvas_text(
+                canvas,
                 18, 20,
                 anchor="nw",
                 text=fit(goal["title"], title_font, max_text_w),
@@ -10424,13 +10800,14 @@ class StudesticsApp(tk.Tk):
                     lift
                 )
 
-            mask = Image.new("L", (width, card_height), 0)
-
-            ImageDraw.Draw(mask).rounded_rectangle(
-                [0, 0, width - 1, card_height - 1],
-                radius=radius,
+            # Drawn at 4x and scaled down, so the corners are smooth.
+            mask_big = Image.new("L", (width * 4, card_height * 4), 0)
+            ImageDraw.Draw(mask_big).rounded_rectangle(
+                [0, 0, width * 4 - 1, card_height * 4 - 1],
+                radius=radius * 4,
                 fill=255
             )
+            mask = mask_big.resize((width, card_height), Image.LANCZOS)
 
             base = Image.new("RGBA", (width, card_height), PANEL)
             base.paste(composited, (0, 0), mask)
@@ -10554,16 +10931,14 @@ class StudesticsApp(tk.Tk):
             fg=MUTED
         ).pack(anchor="w")
 
-        entry = self.make_entry(form)
+        entry = self.make_title_box(form)
 
-        entry.pack(
-            fill="x",
-            ipady=8,
-            pady=(5, 12)
-        )
+        entry.pack(fill="x", pady=(5, 12))
 
         if editing:
-            entry.insert(0, goal["title"])
+            self.emoji_write(entry, goal["title"])
+            entry.mark_set("insert", "end-1c")
+            entry.see("insert")
 
         tk.Label(
             form,
@@ -10591,6 +10966,8 @@ class StudesticsApp(tk.Tk):
 
         if editing:
             self.emoji_write(description, goal["description"] or "")
+            description.mark_set("insert", "end-1c")
+            description.see("insert")
 
         selected_path = tk.StringVar(value="")
         selected_name = tk.StringVar(value="No image selected")
@@ -10655,7 +11032,7 @@ class StudesticsApp(tk.Tk):
 
         def save():
 
-            value = entry.get().strip()
+            value = self.emoji_read(entry).strip()
 
             if not value:
 
@@ -12520,6 +12897,13 @@ class StudesticsApp(tk.Tk):
             for index, button in day_buttons.items():
                 button.configure(selected=(index in chosen))
 
+            try:
+                all_button.configure(
+                    selected=(len(chosen) == len(SCHEDULE_DAYS))
+                )
+            except Exception:
+                pass
+
         def toggle(index):
 
             if index in chosen:
@@ -12538,6 +12922,21 @@ class StudesticsApp(tk.Tk):
             button.pack(side="left", padx=(0, 6))
 
             day_buttons[index] = button
+
+        def toggle_all():
+
+            if len(chosen) == len(SCHEDULE_DAYS):
+                chosen.clear()
+            else:
+                chosen.update(range(len(SCHEDULE_DAYS)))
+
+            paint_days()
+
+        all_button = self.make_button(
+            day_row, "All", toggle_all, width=4
+        )
+
+        all_button.pack(side="left")
 
         paint_days()
 
@@ -12828,8 +13227,8 @@ class StudesticsApp(tk.Tk):
 
             heading = first["title"]
 
-            if len(heading) > 30:
-                heading = heading[:29] + "…"
+            if len(heading) > 90:
+                heading = heading[:89] + "…"
 
         else:
 
@@ -13786,8 +14185,8 @@ class StudesticsApp(tk.Tk):
             key=lambda t: rank.get(t["priority"], 1)
         )
 
-        shown = tasks[:8]
-        extra = len(tasks) - len(shown)
+        shown = tasks
+        extra = 0
 
         win = tk.Toplevel(self)
 
@@ -13798,11 +14197,6 @@ class StudesticsApp(tk.Tk):
         win.transient(self)
         win.grab_set()
 
-        self.center_window(
-            win,
-            480,
-            215 + 68 * max(1, len(shown)) + (24 if extra else 0)
-        )
 
         tk.Frame(win, bg=PURPLE, height=4).pack(fill="x")
 
@@ -13852,14 +14246,38 @@ class StudesticsApp(tk.Tk):
                 padx=28
             )
 
-        list_frame = tk.Frame(win, bg=BG)
+        rows = []
 
         if shown:
-            list_frame.pack(fill="x", padx=28)
+
+            holder = tk.Frame(win, bg=BG)
+
+            holder.pack(fill="x", padx=28)
+
+            canvas = tk.Canvas(
+                holder, bg=BG, highlightthickness=0, bd=0, height=10
+            )
+
+            canvas.pack(fill="x")
+
+            list_frame = tk.Frame(canvas, bg=BG)
+
+            inner = canvas.create_window(
+                (0, 0), window=list_frame, anchor="nw"
+            )
+
+            canvas.bind(
+                "<Configure>",
+                lambda e: canvas.itemconfigure(inner, width=e.width)
+            )
+
+        else:
+
+            list_frame = tk.Frame(win, bg=BG)
 
         for task in shown:
 
-            self._alert_row(
+            row, _meta = self._alert_row(
                 list_frame,
                 priority_color(task["priority"]),
                 task["title"],
@@ -13869,6 +14287,63 @@ class StudesticsApp(tk.Tk):
                     lambda tid=task["id"]: pick(tid)
                 )
             )
+
+            rows.append((row, task["id"]))
+
+        state = {"i": 0}
+
+        if shown:
+
+            win.update_idletasks()
+
+            row_h = rows[0][0].winfo_reqheight() + 8
+
+            visible = min(len(rows), 3)
+
+            canvas.configure(
+                height=row_h * visible,
+                scrollregion=(0, 0, 0, row_h * len(rows))
+            )
+
+            def highlight():
+                for n, (row, _id) in enumerate(rows):
+                    try:
+                        row.action_button.configure(
+                            selected=(n == state["i"])
+                        )
+                    except Exception:
+                        pass
+                top = state["i"] * row_h
+                view_top = canvas.canvasy(0)
+                view_h = canvas.winfo_height()
+                if top < view_top:
+                    canvas.yview_moveto(top / (row_h * len(rows)))
+                elif top + row_h > view_top + view_h:
+                    canvas.yview_moveto(
+                        (top + row_h - view_h) / (row_h * len(rows))
+                    )
+
+            def move(step):
+                state["i"] = (state["i"] + step) % len(rows)
+                highlight()
+                return "break"
+
+            win.bind("<Up>", lambda e: move(-1))
+            win.bind("<Down>", lambda e: move(1))
+            win.bind(
+                "<Return>", lambda e: pick(rows[state["i"]][1])
+            )
+
+            def wheel(e):
+                if len(rows) > visible:
+                    canvas.yview_scroll(int(-e.delta / 120), "units")
+                return "break"
+
+            win.bind("<MouseWheel>", wheel)
+
+            canvas.configure(yscrollincrement=row_h // 2)
+
+            highlight()
 
         if extra:
 
@@ -13883,6 +14358,12 @@ class StudesticsApp(tk.Tk):
                 padx=30,
                 pady=(4, 0)
             )
+
+        win.update_idletasks()
+
+        self.center_window(win, 480, win.winfo_reqheight())
+
+        win.focus_set()
 
     # --------------------------------------------------------
     # Phases, Pomodoro and session history
@@ -19462,13 +19943,19 @@ class StudesticsApp(tk.Tk):
 
         try:
             alive = menu is not None and menu.winfo_exists()
+            # The menu has to live in the same window as the box it
+            # belongs to (a dialog is its own window).
+            if alive and menu.winfo_toplevel() is not (
+                self._emoji_w.winfo_toplevel()
+            ):
+                menu.destroy()
+                alive = False
         except Exception:
             alive = False
 
         if not alive:
-
             menu = tk.Frame(
-                self,
+                self._emoji_w.winfo_toplevel(),
                 bg=PANEL_2,
                 highlightthickness=1,
                 highlightbackground=BORDER
@@ -19574,8 +20061,9 @@ class StudesticsApp(tk.Tk):
             x = max(0, min(box[0], max(0, w.winfo_width() - 300)))
 
             y = box[1] + box[3] + 4
-
-            if y + height > w.winfo_height():
+            if int(w.cget("height")) == 1:
+                y = w.winfo_height() + 4
+            elif y + height > w.winfo_height():
                 y = max(0, box[1] - height - 4)
 
             menu.place(in_=w, x=x, y=y, anchor="nw", width=280)
@@ -22845,18 +23333,27 @@ class StudesticsApp(tk.Tk):
             padx=(10, 5)
         )
 
-        self.section_title(
-            left,
-            "Last 7 days",
-            "Time focused per day  \u00b7  "
-            + fmt_duration(
-                sum(
-                    secs for _, secs in
-                    self.db.focus_daily_seconds(7)
-                )
-            )
-            + " in total"
+        chart_state = {"month": False}
+
+        head = tk.Frame(left, bg=PANEL)
+
+        head.pack(fill="x", padx=20, pady=(20, 12))
+
+        head_title = tk.Label(
+            head, bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")
         )
+
+        head_title.pack(anchor="w")
+
+        head_sub = tk.Label(
+            head, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)
+        )
+
+        head_sub.pack(anchor="w", pady=(2, 0))
+
+        toggle = self.make_button(head, "View month", None, width=11)
+
+        toggle.place(relx=1.0, y=0, anchor="ne")
 
         chart = tk.Canvas(
             left,
@@ -22874,12 +23371,48 @@ class StudesticsApp(tk.Tk):
             pady=(0, 18)
         )
 
-        week = self.db.focus_daily_seconds(7)
+        def show_range():
+
+            days = 30 if chart_state["month"] else 7
+
+            data = self.db.focus_daily_seconds(days)
+
+            chart_state["data"] = data
+
+            head_title.configure(
+                text="Last 30 days" if days == 30 else "Last 7 days"
+            )
+
+            head_sub.configure(
+                text="Time focused per day  \u00b7  "
+                + fmt_duration(sum(secs for _, secs in data))
+                + " in total"
+            )
+
+            toggle.configure(
+                text="View week" if days == 30 else "View month"
+            )
+
+            chart._chart_key = None
+
+            self._draw_week_chart(chart, data)
+
+        def switch_range():
+            chart_state["month"] = not chart_state["month"]
+            show_range()
+
+        toggle.command = switch_range
+
+        chart_state["data"] = self.db.focus_daily_seconds(7)
 
         chart.bind(
             "<Configure>",
-            lambda event: self._draw_week_chart(chart, week)
+            lambda event: self._draw_week_chart(
+                chart, chart_state["data"]
+            )
         )
+
+        show_range()
 
         self.section_title(
             right,
@@ -22887,20 +23420,46 @@ class StudesticsApp(tk.Tk):
             "Your latest focus sessions"
         )
 
-        sessions = self.db.recent_focus_sessions(5)
+        sessions = self.db.recent_focus_sessions(100000)
 
         if not sessions:
-
             self.empty_text(
                 right,
                 "No focus sessions yet. Finish one in "
                 "Focus Mode and it shows up here."
             )
 
-        for session in sessions:
+        # Every session is kept; the list scrolls.
+        scroller = tk.Canvas(
+            right, bg=PANEL, highlightthickness=0, bd=0, width=10,
+            height=10
+        )
 
+        scroller.pack(fill="both", expand=True, pady=(0, 14))
+
+        rows_frame = tk.Frame(scroller, bg=PANEL)
+
+        rows_window = scroller.create_window(
+            (0, 0), window=rows_frame, anchor="nw"
+        )
+
+        scroller.bind(
+            "<Configure>",
+            lambda e: scroller.itemconfigure(rows_window, width=e.width)
+        )
+
+        rows_frame.bind(
+            "<Configure>",
+            lambda e: scroller.configure(
+                scrollregion=scroller.bbox("all")
+            )
+        )
+
+        self._bind_mousewheel(scroller)
+
+        for session in sessions:
             self._analytics_session_row(
-                right,
+                rows_frame,
                 session
             )
 
@@ -22911,9 +23470,7 @@ class StudesticsApp(tk.Tk):
             bg=PANEL
         )
 
-        if parent.winfo_children()[-1:] and len(
-            parent.winfo_children()
-        ) > 2:
+        if getattr(parent, "_rows_added", 0) > 0:
 
             tk.Frame(
                 parent,
@@ -22929,6 +23486,8 @@ class StudesticsApp(tk.Tk):
             padx=20,
             pady=11
         )
+
+        parent._rows_added = getattr(parent, "_rows_added", 0) + 1
 
         title = session["task_title"]
 
@@ -23025,9 +23584,203 @@ class StudesticsApp(tk.Tk):
             anchor="e"
         )
 
+    def _draw_line_chart(self, canvas, data):
+        """Smooth line graph with a soft fill, for the month view."""
+
+        try:
+            width = canvas.winfo_width()
+            height = canvas.winfo_height()
+
+            if width < 80 or height < 80:
+                return
+
+            key = (width, height, len(data))
+
+            if getattr(canvas, "_chart_key", None) == key:
+                return
+
+            canvas._chart_key = key
+
+            canvas.delete("all")
+
+            label_h = 24
+            top_pad = 26
+            left_pad = 14
+            right_pad = 30
+
+            plot_h = height - label_h - top_pad
+            base_y = top_pad + plot_h
+
+            count = len(data)
+
+            step = (width - left_pad - right_pad) / (count - 1)
+
+            biggest = max([secs for _, secs in data] + [30 * 60])
+
+            pts = [
+                (
+                    left_pad + i * step,
+                    base_y - plot_h * secs / biggest
+                )
+                for i, (_d, secs) in enumerate(data)
+            ]
+
+            for frac in (0, 0.5, 1.0):
+                gy = base_y - plot_h * frac
+                canvas.create_line(
+                    0, gy, width, gy,
+                    fill=mix_color(BORDER, PANEL, 0.35 if frac else 0.0),
+                    dash=(2, 4) if frac else ()
+                )
+
+            # Smooth curve through the points (Catmull-Rom), never
+            # dipping below the baseline or above the top.
+            curve = []
+
+            for i in range(count - 1):
+                p0 = pts[max(i - 1, 0)]
+                p1 = pts[i]
+                p2 = pts[i + 1]
+                p3 = pts[min(i + 2, count - 1)]
+                for s in range(10):
+                    u = s / 10
+                    x = 0.5 * (
+                        2 * p1[0] + (-p0[0] + p2[0]) * u
+                        + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * u * u
+                        + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * u ** 3
+                    )
+                    y = 0.5 * (
+                        2 * p1[1] + (-p0[1] + p2[1]) * u
+                        + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * u * u
+                        + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * u ** 3
+                    )
+                    curve.append((x, min(base_y, max(top_pad, y))))
+
+            curve.append(pts[-1])
+
+            if HAS_PIL:
+
+                S = 3
+
+                big = (width * S, height * S)
+
+                img = Image.new("RGBA", big, (0, 0, 0, 0))
+
+                # Soft fill under the line, fading towards the baseline.
+                mask = Image.new("L", big, 0)
+
+                ImageDraw.Draw(mask).polygon(
+                    [(x * S, y * S) for x, y in curve]
+                    + [(curve[-1][0] * S, base_y * S),
+                       (curve[0][0] * S, base_y * S)],
+                    fill=255
+                )
+
+                grad = Image.new("L", (1, height * S), 0)
+
+                for gy in range(height * S):
+                    frac = max(
+                        0.0,
+                        min(1.0, (gy / S - top_pad) / max(1, plot_h))
+                    )
+                    grad.putpixel((0, gy), int(95 * (1 - frac)))
+
+                grad = grad.resize(big)
+
+                fade = Image.composite(
+                    grad, Image.new("L", big, 0), mask
+                )
+
+                img.paste(
+                    Image.new("RGBA", big, _hex_rgb(PURPLE) + (255,)),
+                    (0, 0), fade
+                )
+
+                d = ImageDraw.Draw(img)
+
+                d.line(
+                    [(x * S, y * S) for x, y in curve],
+                    fill=_hex_rgb(PURPLE_HOVER) + (255,),
+                    width=int(2.6 * S),
+                    joint="curve"
+                )
+
+                for i, (_d, secs) in enumerate(data):
+
+                    is_today = i == count - 1
+
+                    if secs <= 0 and not is_today:
+                        continue
+
+                    x, y = pts[i]
+
+                    r = (5 if is_today else 3.6) * S
+
+                    d.ellipse(
+                        [x * S - r - S, y * S - r - S,
+                         x * S + r + S, y * S + r + S],
+                        fill=_hex_rgb(PANEL) + (255,)
+                    )
+
+                    d.ellipse(
+                        [x * S - r, y * S - r, x * S + r, y * S + r],
+                        fill=_hex_rgb(
+                            PURPLE_HOVER if is_today else PURPLE
+                        ) + (255,)
+                    )
+
+                img = img.resize((width, height), Image.LANCZOS)
+
+                photo = ImageTk.PhotoImage(img)
+
+                canvas.chart_photo = photo
+
+                canvas.create_image(0, 0, anchor="nw", image=photo)
+
+            else:
+
+                canvas.create_line(
+                    *[c for pt in curve for c in pt],
+                    fill=PURPLE_HOVER, width=2, smooth=True
+                )
+
+            for i, (day, secs) in enumerate(data):
+
+                x, y = pts[i]
+
+                if i == count - 1:
+                    canvas.create_text(
+                        width - 4, height - label_h / 2 + 2,
+                        text="Today", fill=TEXT, anchor="e",
+                        font=("Segoe UI", 9)
+                    )
+                elif i % 5 == 0 and i < count - 3:
+                    try:
+                        label = datetime.strptime(
+                            day, "%Y-%m-%d"
+                        ).strftime("%d").lstrip("0")
+                    except Exception:
+                        label = day
+                    canvas.create_text(
+                        x, height - label_h / 2 + 2, text=label,
+                        fill=MUTED, font=("Segoe UI", 9)
+                    )
+
+                if secs > 0 and secs == biggest:
+                    canvas.create_text(
+                        x, y - 14, text=fmt_duration(secs),
+                        fill=MUTED, font=("Segoe UI", 8)
+                    )
+
+        except Exception:
+            pass
+
     def _draw_week_chart(self, canvas, data):
         """Bar chart that fills whatever space it is given and redraws
         when the window is resized. Bars are anti-aliased via Pillow."""
+
+        if len(data) > 10:
+            return self._draw_line_chart(canvas, data)
 
         try:
 
@@ -23055,6 +23808,7 @@ class StudesticsApp(tk.Tk):
 
             slot = width / count
             bar_w = min(46, slot * 0.5)
+            many = count > 10
 
             # At least a 30-minute scale, so one short session doesn't
             # fill the whole chart.
@@ -23158,14 +23912,15 @@ class StudesticsApp(tk.Tk):
                 else:
 
                     try:
-
                         label = datetime.strptime(
                             day,
                             "%Y-%m-%d"
-                        ).strftime("%a")
-
+                        ).strftime("%d" if many else "%a")
+                        if many:
+                            label = label.lstrip("0")
+                            if index % 3 != 0:
+                                label = ""
                     except Exception:
-
                         label = day
 
                 canvas.create_text(
@@ -23176,8 +23931,7 @@ class StudesticsApp(tk.Tk):
                     font=("Segoe UI", 9)
                 )
 
-                if secs > 0:
-
+                if secs > 0 and (not many or secs == biggest):
                     canvas.create_text(
                         center,
                         y0 - 10,
@@ -24251,15 +25005,24 @@ class StudesticsApp(tk.Tk):
             side="left"
         )
 
-        self.make_button(
-            rem_row,
-            "Test alarm",
-            self.test_reminder,
-            width=10
-        ).pack(
-            side="left",
-            padx=8
-        )
+        test_row = tk.Frame(rem_panel, bg=PANEL)
+
+        test_row.pack(fill="x", padx=25, pady=(10, 0))
+
+        tk.Label(
+            test_row, text="Test alarm", bg=PANEL, fg=MUTED,
+            font=("Segoe UI", 10)
+        ).pack(side="left", padx=(0, 12))
+
+        for level in ("Low", "Medium", "High"):
+
+            self.make_button(
+                test_row,
+                level,
+                lambda l=level: self.test_reminder(l),
+                width=8,
+                active=priority_color(level)
+            ).pack(side="left", padx=(0, 8))
 
         auto_row = tk.Frame(
             rem_panel,
@@ -27085,7 +27848,8 @@ class StudesticsApp(tk.Tk):
                 justify="left", wraplength=wrap or 0
             )
 
-        if not HAS_PIL:
+        # Emoji in the text: the normal label draws them (in colour).
+        if not HAS_PIL or has_emoji(text):
             return plain()
 
         try:
@@ -27281,8 +28045,16 @@ class StudesticsApp(tk.Tk):
 
         kicker_label.pack(anchor="w")
 
+        # Longer headings get a smaller size so they still fit.
+        n = len(heading)
+
+        heading_size = (
+            20 if n <= 22 else 18 if n <= 34 else
+            16 if n <= 48 else 14 if n <= 70 else 12
+        )
+
         title_label = self._glow_heading(
-            column, heading, accent, 20, wrap=width - 130
+            column, heading, accent, heading_size, wrap=width - 130
         )
 
         title_label.pack(anchor="w", fill="x")
@@ -27315,7 +28087,7 @@ class StudesticsApp(tk.Tk):
 
         win.update_idletasks()
 
-        width = shell["width"]
+        width = max(shell["width"], win.winfo_reqwidth() + 8)
 
         height = win.winfo_reqheight() + 4
         x = max(0, (win.winfo_screenwidth() - width) // 2)
@@ -27364,6 +28136,8 @@ class StudesticsApp(tk.Tk):
             holder.pack(side="right", padx=(0, 10), pady=8)
 
             button = self.make_button(holder, label, command, width=6)
+
+            row.action_button = button
 
             # Darker than the card, so it reads as set into it.
             button.idle_color = mix_color(PANEL, BG, 0.6)
@@ -29102,8 +29876,8 @@ class StudesticsApp(tk.Tk):
 
             heading = top["title"]
 
-            if len(heading) > 30:
-                heading = heading[:29] + "…"
+            if len(heading) > 90:
+                heading = heading[:89] + "…"
 
             subtitle = ""
 
@@ -29121,10 +29895,10 @@ class StudesticsApp(tk.Tk):
 
         win.title("Studestics reminder")
 
-        loud = any(t["priority"] in ("Medium", "High") for t in tasks)
+        # Every reminder keeps ringing until you deal with the card;
+        # the mute button silences it without closing the card.
+        loud = True
 
-        # Low-priority reminders beep once; Medium and High keep
-        # ringing until you deal with the card.
         self._attach_alarm(win, loud)
 
         body = shell["body"]
@@ -29277,13 +30051,15 @@ class StudesticsApp(tk.Tk):
 
         self._alert_show(shell)
 
-    def test_reminder(self):
-
+    def test_reminder(self, priority="High"):
         self.show_reminder([
             {
                 "id": None,
-                "title": "Test reminder — this is what an alarm looks like",
-                "priority": "High"
+                "title": (
+                    f"Test {priority.lower()} reminder \U0001F514 "
+                    "this is what an alarm looks like"
+                ),
+                "priority": priority
             }
         ])
 
