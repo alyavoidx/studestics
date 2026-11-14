@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.4"
+VERSION = "1.6.5"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -2999,6 +2999,37 @@ class Database:
 
             self.connection.commit()
 
+    def copy_schedule_day(self, source, targets):
+        """Make every block on weekday `source` also repeat on each
+        weekday in `targets`."""
+
+        with self.lock:
+
+            rows = self.connection.execute(
+                "SELECT id, days FROM schedule"
+            ).fetchall()
+
+            for row in rows:
+
+                days = {d for d in row["days"].split(",") if d != ""}
+
+                if str(source) not in days:
+                    continue
+
+                merged = days | {str(d) for d in targets}
+
+                if merged != days:
+
+                    self.connection.execute(
+                        "UPDATE schedule SET days=? WHERE id=?",
+                        (
+                            ",".join(sorted(merged, key=int)),
+                            row["id"]
+                        )
+                    )
+
+            self.connection.commit()
+
     def clear_schedule_day(self, day):
         """Remove every block from one weekday. A block that repeats on
         other days stays on those days."""
@@ -4309,6 +4340,15 @@ class RoundedButton:
         self.canvas.bind("<Leave>", self._on_leave)
         self.canvas.bind("<Button-1>", self._on_click)
 
+        # Remembered per window so the keyboard can reach it.
+        self.kb = False
+
+        try:
+            top = parent.winfo_toplevel()
+            top.__dict__.setdefault("_rbuttons", []).append(self)
+        except Exception:
+            pass
+
         self._redraw()
 
     def _text_width(self):
@@ -4358,19 +4398,40 @@ class RoundedButton:
             if box:
                 h = max(h, box[3] - box[1] + 18)
 
+        lift = 3 if getattr(self, "shadow", False) else 0
+
         self.canvas.configure(
             width=w,
-            height=h
+            height=h + lift
         )
 
-        if self.state == "disabled":
+        if self.state == "disabled" and not self.selected:
             bg_color, fg_color = PANEL_2, MUTED_2
-        elif self.selected or self.hovered:
+        elif self.selected or self.hovered or self.kb:
             bg_color, fg_color = self.active_color, "#FFFFFF"
         else:
             bg_color, fg_color = (
                 getattr(self, "idle_color", None) or PANEL_2
             ), TEXT
+
+        if lift:
+
+            # A darker copy a few pixels lower, so the button looks
+            # raised off the card.
+            try:
+                parent_bg = self.canvas.cget("bg")
+            except Exception:
+                parent_bg = BG
+
+            self.app._draw_bubble_background(
+                self.canvas, w, h, min(h // 2, 18),
+                mix_color(parent_bg, "#000000", 0.55)
+            )
+
+            for item in self.canvas.find_all():
+                self.canvas.move(item, 0, lift)
+
+            self.canvas._shadow_photo = self.canvas.bubble_photo
 
         self.app._draw_bubble_background(
             self.canvas, w, h, min(h // 2, 18), bg_color
@@ -4408,19 +4469,33 @@ class RoundedButton:
 
     def _on_enter(self, event=None):
 
-        if self.state != "disabled":
+        if self.state != "disabled" and not getattr(self, "_hover_off", False):
             self.hovered = True
             self._redraw()
 
     def _on_leave(self, event=None):
 
         self.hovered = False
+        self._hover_off = False
         self._redraw()
 
     def _on_click(self, event=None):
 
+        # An on/off button drops its hover glow when clicked, so
+        # "off" doesn't still look lit while the mouse is on it.
+        if getattr(self, "_toggle", False):
+            self.hovered = False
+            self._hover_off = True
+
         if self.state != "disabled" and self.command:
             self.command()
+
+        if getattr(self, "_toggle", False):
+
+            try:
+                self._redraw()
+            except Exception:
+                pass
 
     def configure(self, **kwargs):
 
@@ -4432,6 +4507,7 @@ class RoundedButton:
 
         if "selected" in kwargs:
             self.selected = kwargs["selected"]
+            self._toggle = True
 
         self._redraw()
 
@@ -4564,6 +4640,26 @@ class StudesticsApp(tk.Tk):
         self.configure(
             bg=BG
         )
+
+        # Open maximised straight away if it was last time, instead of
+        # appearing small and jumping to full size a moment later.
+        if "--background" not in sys.argv:
+
+            try:
+
+                peek = sqlite3.connect(DB_PATH)
+
+                row = peek.execute(
+                    "SELECT value FROM settings WHERE key='window_state'"
+                ).fetchone()
+
+                peek.close()
+
+                if row and row[0] == "zoomed":
+                    self.state("zoomed")
+
+            except Exception:
+                pass
 
         # ----------------------------------------------------
         # State
@@ -4877,12 +4973,307 @@ class StudesticsApp(tk.Tk):
                         except Exception:
                             pass
 
+                        # Title bar stays blank, but the taskbar button
+                        # gets the app's icon: a fully transparent one
+                        # can show up as a black square there.
+                        try:
+                            import ctypes
+                            import tempfile
+
+                            big = getattr(self, "_taskbar_ico", None)
+
+                            if big is None:
+                                big = os.path.join(
+                                    tempfile.gettempdir(),
+                                    "studestics_taskbar.ico"
+                                )
+                                app_icon_image(64).save(
+                                    big, format="ICO",
+                                    sizes=[(32, 32), (48, 48)]
+                                )
+                                self._taskbar_ico = big
+
+                            user32 = ctypes.windll.user32
+
+                            hicon = user32.LoadImageW(
+                                None, big, 1, 32, 32, 0x10
+                            )
+
+                            hwnd = user32.GetParent(window.winfo_id())
+
+                            if hicon and hwnd:
+                                user32.SendMessageW(hwnd, 0x80, 1, hicon)
+                        except Exception:
+                            pass
+
+                        try:
+                            self._setup_popup_keys(window)
+                        except Exception:
+                            pass
+
                     window.after(20, lambda: self._paint_titlebar(window))
 
             except Exception:
                 pass
 
         self.bind_all("<Map>", on_map, add="+")
+
+    # --------------------------------------------------------
+    # Keyboard control for every pop-up: Esc closes, Enter presses
+    # the main button, arrow keys move between buttons.
+    # --------------------------------------------------------
+
+    _ENTER_ORDER = (
+        "next", "see score", "ok", "save changes", "save", "create task",
+        "create goal", "create", "add", "apply", "yes", "confirm",
+        "select", "start focus", "close", "got it", "finish", "send",
+        "dismiss"
+    )
+
+    def _popup_buttons(self, win):
+
+        found = []
+
+        for button in list(getattr(win, "_rbuttons", [])):
+
+            try:
+
+                if (
+                    button.state != "disabled"
+                    and button.canvas.winfo_exists()
+                    and button.canvas.winfo_ismapped()
+                    and button.canvas.winfo_viewable()
+                ):
+                    found.append(button)
+
+            except Exception:
+                continue
+
+        return found
+
+    def _popup_set_focus(self, win, button):
+
+        old = getattr(win, "_kb_btn", None)
+
+        if old is not None and old is not button:
+
+            old.kb = False
+
+            try:
+                old._redraw()
+            except Exception:
+                pass
+
+        win._kb_btn = button
+
+        if button is not None:
+
+            button.kb = True
+
+            button._redraw()
+
+    def _setup_popup_keys(self, win):
+
+        typing = ("Entry", "TEntry", "Text", "Spinbox", "Listbox")
+
+        def widget_class(event):
+
+            try:
+                return event.widget.winfo_class()
+            except Exception:
+                return ""
+
+        def close(event):
+
+            handler = ""
+
+            try:
+                handler = win.protocol("WM_DELETE_WINDOW")
+            except Exception:
+                pass
+
+            try:
+
+                if handler:
+                    win.tk.call(handler)
+                else:
+                    win.destroy()
+
+            except Exception:
+
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+            return "break"
+
+        def press():
+
+            buttons = self._popup_buttons(win)
+
+            picked = getattr(win, "_kb_btn", None)
+
+            if picked is None or picked not in buttons:
+
+                picked = None
+
+                for name in self._ENTER_ORDER:
+
+                    matches = [
+                        b for b in buttons
+                        if b.text.strip().lower() == name
+                    ]
+
+                    if matches:
+                        picked = matches[-1] if name == "next" else matches[0]
+                        break
+
+                if picked is None:
+
+                    done = [
+                        b for b in buttons
+                        if b.text.strip().lower() == "done"
+                    ]
+
+                    if len(done) == 1:
+                        picked = done[0]
+
+                if picked is None:
+
+                    # A two-button question (Cancel / Delete, No / Yes):
+                    # Enter takes the one that isn't the way out.
+                    outs = ("cancel", "no", "close", "dismiss", "later")
+
+                    rest = [
+                        b for b in buttons
+                        if b.text.strip().lower() not in outs
+                    ]
+
+                    if len(buttons) == 2 and len(rest) == 1:
+                        picked = rest[0]
+
+            if picked is None:
+                return False
+
+            try:
+                picked.command and picked.command()
+            except Exception:
+                pass
+
+            return True
+
+        if not hasattr(win, "_popup_press"):
+            win._popup_press = press
+
+        def enter(event):
+
+            cls = widget_class(event)
+
+            if cls == "Text":
+                return None
+
+            if cls in typing:
+
+                try:
+
+                    if event.widget.bind("<Return>"):
+                        return None
+
+                except Exception:
+                    pass
+
+            return "break" if press() else None
+
+        def arrow(event, dx, dy):
+
+            if widget_class(event) in typing:
+                return None
+
+            buttons = self._popup_buttons(win)
+
+            if not buttons:
+                return None
+
+            def centre(button):
+
+                c = button.canvas
+
+                return (
+                    c.winfo_rootx() + c.winfo_width() / 2,
+                    c.winfo_rooty() + c.winfo_height() / 2
+                )
+
+            current = getattr(win, "_kb_btn", None)
+
+            if current is None or current not in buttons:
+
+                order = sorted(
+                    buttons, key=lambda b: (centre(b)[1], centre(b)[0])
+                )
+
+                target = order[0] if (dx + dy) > 0 else order[-1]
+
+            else:
+
+                cx, cy = centre(current)
+
+                best, best_score = None, None
+
+                for button in buttons:
+
+                    if button is current:
+                        continue
+
+                    x, y = centre(button)
+
+                    ahead = (x - cx) * dx + (y - cy) * dy
+
+                    if ahead <= 4:
+                        continue
+
+                    side = abs((x - cx) * dy) + abs((y - cy) * dx)
+
+                    score = ahead + 2 * side
+
+                    if best_score is None or score < best_score:
+                        best, best_score = button, score
+
+                target = best
+
+            if target is not None:
+                self._popup_set_focus(win, target)
+
+            return "break"
+
+        if not win.bind("<Escape>"):
+            win.bind("<Escape>", close)
+
+        if not win.bind("<Return>"):
+            win.bind("<Return>", enter)
+            win.bind("<KP_Enter>", enter)
+
+        for key, dx, dy in (
+            ("Up", 0, -1), ("Down", 0, 1), ("Left", -1, 0), ("Right", 1, 0)
+        ):
+
+            if not win.bind(f"<{key}>"):
+                win.bind(
+                    f"<{key}>",
+                    lambda e, a=dx, b=dy: arrow(e, a, b)
+                )
+
+        def grab_focus():
+
+            try:
+
+                if win.winfo_exists() and win.focus_get() is None:
+                    win.focus_set()
+
+            except Exception:
+                pass
+
+        win.after(120, grab_focus)
 
     def finish_startup(self):
 
@@ -5895,6 +6286,15 @@ class StudesticsApp(tk.Tk):
         def enter(event):
             if self._emoji_visible() and self._emoji_w is box:
                 return self._emoji_key(0)
+
+            # No emoji menu open: Enter means "go" (Create, Save...).
+            try:
+                press = getattr(box.winfo_toplevel(), "_popup_press", None)
+                if press:
+                    press()
+            except Exception:
+                pass
+
             return "break"
 
         box.bind("<Return>", enter)
@@ -11574,13 +11974,23 @@ class StudesticsApp(tk.Tk):
                 if correct:
                     state["score"] += 1
 
-                buttons[item["answer"]].configure(selected=True)
+                right_button = buttons[item["answer"]]
+
+                right_button.active_color = GREEN
+
+                right_button.configure(selected=True)
+
+                if not correct:
+
+                    buttons[number].active_color = RED
+
+                    buttons[number].configure(selected=True)
 
                 result.configure(
                     text=(
                         "Correct!"
                         if correct else
-                        "Not quite. The answer is highlighted."
+                        "Not quite. The right answer is in green."
                     ),
                     fg=GREEN if correct else RED
                 )
@@ -12124,6 +12534,13 @@ class StudesticsApp(tk.Tk):
                 active=DANGER_HOVER
             ).pack(side="left", padx=(8, 0))
 
+            self.make_button(
+                top,
+                "Copy this day",
+                self.copy_schedule_day_dialog,
+                width=13
+            ).pack(side="left", padx=(8, 0))
+
         tabs = tk.Frame(top, bg=BG)
 
         tabs.pack(side="right")
@@ -12360,47 +12777,57 @@ class StudesticsApp(tk.Tk):
                 if len(title) > 40:
                     title = title[:39] + "…"
 
-                tk.Label(
-                    middle,
-                    text=title,
-                    bg=PANEL_2,
-                    fg=TEXT,
-                    font=("Segoe UI", 11),
-                    anchor="w"
-                ).pack(anchor="w", pady=(12, 0))
+                self._glow_heading(
+                    middle, title, PURPLE, size=11, bg=PANEL_2, bold=True
+                ).pack(anchor="w", pady=(10, 0))
 
                 days = {int(d) for d in b["days"].split(",") if d != ""}
 
-                tk.Label(
-                    middle,
-                    text=(
-                        f"{describe_days(days)}  ·  "
-                        f"{describe_reminder(b['remind_before'])}"
-                    ),
-                    bg=PANEL_2,
-                    fg=MUTED_2,
-                    font=("Segoe UI", 9),
-                    anchor="w"
-                ).pack(anchor="w", pady=(0, 12))
+                sub = tk.Frame(middle, bg=PANEL_2)
+
+                sub.pack(anchor="w", pady=(0, 10))
+
+                for piece, colour in (
+                    (describe_days(days), PURPLE_HOVER),
+                    ("\u00b7", MUTED_2),
+                    (
+                        describe_reminder(b["remind_before"]),
+                        GREEN if b["remind_before"] >= 0 else MUTED
+                    )
+                ):
+
+                    self._glow_heading(
+                        sub, piece, PURPLE, size=9, bg=PANEL_2,
+                        fg=colour, bold=False
+                    ).pack(side="left", padx=(0, 6))
 
                 actions = tk.Frame(row, bg=PANEL_2)
 
                 actions.pack(side="right", padx=(8, 12))
 
-                self.make_button(
+                delete_button = self.make_button(
                     actions,
                     "Delete",
                     lambda blk=b: self.delete_schedule_confirm(blk),
                     width=7,
                     active=DANGER_HOVER
-                ).pack(side="right", padx=(6, 0), pady=12)
+                )
 
-                self.make_button(
+                edit_button = self.make_button(
                     actions,
                     "Edit",
                     lambda blk=b: self.schedule_dialog(blk),
                     width=6
-                ).pack(side="right", pady=12)
+                )
+
+                for raised in (delete_button, edit_button):
+
+                    raised.idle_color = mix_color(PANEL_2, BG, 0.45)
+                    raised._redraw()
+
+                delete_button.pack(side="right", padx=(6, 0), pady=12)
+
+                edit_button.pack(side="right", pady=12)
 
                 if running or b["id"] == next_id:
 
@@ -12653,9 +13080,9 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(form, text="What", bg=BG, fg=MUTED).pack(anchor="w")
 
-        title_entry = self.make_entry(form)
+        title_entry = self.make_title_box(form)
 
-        title_entry.pack(fill="x", ipady=8, pady=(5, 14))
+        title_entry.pack(fill="x", pady=(5, 14))
 
         now = datetime.now()
 
@@ -12667,11 +13094,30 @@ class StudesticsApp(tk.Tk):
 
             remind0 = block["remind_before"]
 
-            title_entry.insert(0, block["title"])
+            self.emoji_write(title_entry, block["title"])
+
+            title_entry.mark_set("insert", "end-1c")
 
         else:
 
             days0 = {self._sched_day if day is None else day}
+
+            # A new block starts with the days used for the last one.
+            if day is None:
+
+                try:
+
+                    last = {
+                        int(d) for d in
+                        self.db.get_setting("schedule_last_days", "").split(",")
+                        if d.strip().isdigit() and 0 <= int(d) <= 6
+                    }
+
+                    if last:
+                        days0 = last
+
+                except Exception:
+                    pass
 
             # Pick up where the day's last block ends, so a timetable
             # can be filled in without typing every time.
@@ -12800,7 +13246,7 @@ class StudesticsApp(tk.Tk):
 
             return "break"
 
-        for entry in (title_entry, start_entry, end_entry):
+        for entry in (start_entry, end_entry):
 
             entry.bind("<Control-BackSpace>", word_back)
             entry.bind("<Control-Delete>", word_forward)
@@ -12981,7 +13427,7 @@ class StudesticsApp(tk.Tk):
 
         def save():
 
-            name = title_entry.get().strip()
+            name = self.emoji_read(title_entry).strip()
 
             if not name:
 
@@ -13034,6 +13480,14 @@ class StudesticsApp(tk.Tk):
                     name, start, end, chosen, remind["value"]
                 )
 
+                try:
+                    self.db.set_setting(
+                        "schedule_last_days",
+                        ",".join(str(d) for d in sorted(chosen))
+                    )
+                except Exception:
+                    pass
+
             # Show the day this block was made for.
             if self._sched_day not in chosen:
                 self._sched_day = min(chosen)
@@ -13059,6 +13513,8 @@ class StudesticsApp(tk.Tk):
 
         title_entry.focus_set()
 
+        window._popup_press = save
+
         window.bind("<Return>", lambda e: save())
 
     def delete_all_schedule_confirm(self):
@@ -13078,6 +13534,139 @@ class StudesticsApp(tk.Tk):
         self.db.delete_all_schedule()
 
         self.show_page("Schedule")
+
+    def copy_schedule_day_dialog(self):
+        """Pick the days to copy the shown day's whole timetable to."""
+
+        source = self._sched_day
+
+        name = SCHEDULE_DAY_NAMES[source]
+
+        count = sum(
+            1 for b in self.db.get_schedule()
+            if str(source) in b["days"].split(",")
+        )
+
+        if not count:
+
+            messagebox.showinfo(
+                "Copy this day", f"Nothing is planned on {name}."
+            )
+
+            return
+
+        window = tk.Toplevel(self)
+
+        window.title("Copy day")
+
+        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+
+        self.center_window(window, 600, 330)
+
+        window.configure(bg=BG)
+
+        window.transient(self)
+
+        window.grab_set()
+
+        self._form_header(window, "Schedule", f"Copy {name}", "calendar")
+
+        buttons = tk.Frame(window, bg=BG)
+
+        buttons.pack(side="bottom", fill="x", padx=28, pady=(14, 22))
+
+        tk.Frame(window, bg=BORDER, height=1).pack(side="bottom", fill="x")
+
+        form = tk.Frame(window, bg=BG)
+
+        form.pack(fill="both", expand=True, padx=28)
+
+        tk.Label(
+            form,
+            text=(
+                f"Paste the {count} block" + ("" if count == 1 else "s")
+                + f" from {name} onto:"
+            ),
+            bg=BG, fg=MUTED
+        ).pack(anchor="w")
+
+        chosen = set()
+
+        row = tk.Frame(form, bg=BG)
+
+        row.pack(fill="x", pady=(8, 14))
+
+        day_buttons = {}
+
+        others = [i for i in range(7) if i != source]
+
+        def paint():
+
+            for index, button in day_buttons.items():
+                button.configure(selected=(index in chosen))
+
+            all_button.configure(selected=(len(chosen) == len(others)))
+
+        def toggle(index):
+
+            chosen.symmetric_difference_update({index})
+
+            paint()
+
+        for index, label in enumerate(SCHEDULE_DAYS):
+
+            if index == source:
+                continue
+
+            button = self.make_button(
+                row, label, lambda i=index: toggle(i), width=4
+            )
+
+            button.pack(side="left", padx=(0, 6))
+
+            day_buttons[index] = button
+
+        def toggle_all():
+
+            if len(chosen) == len(others):
+                chosen.clear()
+            else:
+                chosen.update(others)
+
+            paint()
+
+        all_button = self.make_button(row, "All", toggle_all, width=4)
+
+        all_button.pack(side="left")
+
+        paint()
+
+        def copy():
+
+            if not chosen:
+
+                messagebox.showwarning(
+                    "Copy this day", "Pick at least one day.",
+                    parent=window
+                )
+
+                return
+
+            self.db.copy_schedule_day(source, sorted(chosen))
+
+            window.destroy()
+
+            self.show_page("Schedule")
+
+        go = self.make_button(buttons, "Paste", copy, width=9)
+
+        go.configure(selected=True)
+
+        go.pack(side="right")
+
+        self.make_button(
+            buttons, "Cancel", window.destroy, width=9
+        ).pack(side="right", padx=(0, 10))
 
     def clear_schedule_day_confirm(self):
 
@@ -17743,7 +18332,7 @@ class StudesticsApp(tk.Tk):
             if self.focus_finished:
 
                 self.focus_status_label.configure(
-                    text="Session complete ✓",
+                    text="Complete ✓",
                     fg=GREEN
                 )
 
@@ -18106,6 +18695,8 @@ class StudesticsApp(tk.Tk):
         self.chat_input.bind(
             "<<Paste>>", self._chat_placeholder_before_edit, add="+"
         )
+        self.chat_input.bind("<Control-v>", self._chat_paste_image)
+        self.chat_input.bind("<Control-V>", self._chat_paste_image)
         self.chat_input.bind(
             "<<Cut>>", self._chat_placeholder_before_edit, add="+"
         )
@@ -20859,6 +21450,82 @@ class StudesticsApp(tk.Tk):
 
         self._refresh_chat_attachments()
 
+    def _chat_paste_image(self, event=None):
+        """Ctrl+V: a copied picture (or copied files) becomes an
+        attachment. Plain text pastes as usual."""
+
+        if self.chat_busy or not HAS_PIL:
+            return None
+
+        try:
+
+            from PIL import ImageGrab
+
+            grabbed = ImageGrab.grabclipboard()
+
+        except Exception:
+
+            return None
+
+        paths = []
+
+        try:
+
+            if isinstance(grabbed, Image.Image):
+
+                dest = ATTACH_DIR / (
+                    f"pasted_{int(datetime.now().timestamp() * 1000)}.png"
+                )
+
+                grabbed.convert("RGBA").save(dest, format="PNG")
+
+                paths.append(str(dest))
+
+            elif isinstance(grabbed, (list, tuple)):
+
+                paths = [p for p in grabbed if os.path.isfile(p)]
+
+        except Exception:
+
+            return None
+
+        if not paths:
+            return None
+
+        current = getattr(self, "chat_attachments", [])
+
+        for path in paths:
+
+            try:
+                too_big = (
+                    os.path.getsize(path)
+                    > self.CHAT_MAX_FILE_MB * 1024 * 1024
+                )
+            except OSError:
+                too_big = False
+
+            if too_big or path in current:
+                continue
+
+            if len(current) >= self.CHAT_MAX_FILES:
+
+                messagebox.showinfo(
+                    "Attach",
+                    f"You can attach up to {self.CHAT_MAX_FILES} "
+                    "files to one message.",
+                    parent=self
+                )
+
+                break
+
+            current.append(path)
+
+        self.chat_attachments = current
+
+        self._refresh_chat_attachments()
+
+        return "break"
+
     def _refresh_chat_attachments(self):
         """Shows the attached files as small chips above the box."""
 
@@ -20886,8 +21553,9 @@ class StudesticsApp(tk.Tk):
 
             if not bar.winfo_ismapped():
 
+                # Lines up with where the text box starts (after the +).
                 bar.pack(
-                    fill="x", padx=15, pady=(10, 0),
+                    fill="x", padx=(15 + 38 + 10, 15), pady=(10, 0),
                     before=self._chat_input_area
                 )
 
@@ -27836,16 +28504,17 @@ class StudesticsApp(tk.Tk):
         return default if value is None else value
 
     def _glow_heading(
-        self, parent, text, accent, size=18, bg=BG, wrap=None
+        self, parent, text, accent, size=18, bg=BG, wrap=None,
+        fg=None, bold=True
     ):
         """A heading whose letters have a dark outline so they pop. Falls back to a plain label if the font
         or Pillow isn't available."""
 
         def plain():
             return tk.Label(
-                parent, text=text, bg=bg, fg=TEXT,
-                font=("Segoe UI", size, "bold"), anchor="w",
-                justify="left", wraplength=wrap or 0
+                parent, text=text, bg=bg, fg=fg or TEXT,
+                font=("Segoe UI", size, "bold" if bold else "normal"),
+                anchor="w", justify="left", wraplength=wrap or 0
             )
 
         # Emoji in the text: the normal label draws them (in colour).
@@ -27860,10 +28529,16 @@ class StudesticsApp(tk.Tk):
             big = px * 3
 
             for path in (
-                "C:/Windows/Fonts/segoeuib.ttf",
-                "C:/Windows/Fonts/seguisb.ttf",
-                "C:/Windows/Fonts/arialbd.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                (
+                    "C:/Windows/Fonts/segoeuib.ttf",
+                    "C:/Windows/Fonts/seguisb.ttf",
+                    "C:/Windows/Fonts/arialbd.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                ) if bold else (
+                    "C:/Windows/Fonts/segoeui.ttf",
+                    "C:/Windows/Fonts/arial.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                )
             ):
                 try:
                     font = ImageFont.truetype(path, big)
@@ -27923,7 +28598,7 @@ class StudesticsApp(tk.Tk):
 
             canvas.paste(tint, (0, 0), ring)
             canvas.paste(
-                Image.new("RGB", (width, height), _hex_rgb(TEXT)),
+                Image.new("RGB", (width, height), _hex_rgb(fg or TEXT)),
                 (0, 0), fill
             )
 
@@ -29942,18 +30617,23 @@ class StudesticsApp(tk.Tk):
 
                 text, color = meta_of(task)
 
+                made = {}
+
                 row, meta_label = self._alert_row(
                     body, priority_color(task["priority"]), task["title"],
-                    text, color
+                    text, color,
+                    action=(
+                        (
+                            "Done",
+                            lambda tid=task["id"], m=made: finish(
+                                tid, m["row"]
+                            )
+                        )
+                        if task["id"] is not None else None
+                    )
                 )
 
-                if task["id"] is not None:
-
-                    self.make_button(
-                        row, "Done",
-                        lambda tid=task["id"], r=row: finish(tid, r),
-                        width=6
-                    ).pack(side="right", padx=10, pady=8)
+                made["row"] = row
 
                 live.append((task, meta_label, "row"))
 
