@@ -4580,6 +4580,41 @@ class RoundedButton:
 _PANEL_CORNERS = {}
 
 
+def _tick_badge_image(size, color):
+    """A round badge with a thick black tick, anti-aliased."""
+
+    scale = 8
+
+    big = size * scale
+
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+
+    draw = ImageDraw.Draw(img)
+
+    draw.ellipse([0, 0, big - 1, big - 1], fill=color)
+
+    points = [
+        (big * 0.28, big * 0.52),
+        (big * 0.44, big * 0.68),
+        (big * 0.74, big * 0.34)
+    ]
+
+    draw.line(
+        points,
+        fill=(0, 0, 0, 255),
+        width=int(big * 0.13),
+        joint="curve"
+    )
+
+    for x, y in (points[0], points[-1]):
+
+        r = big * 0.065
+
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=(0, 0, 0, 255))
+
+    return img.resize((size, size), Image.LANCZOS)
+
+
 _EDGE_STRIPES = {}
 
 
@@ -5425,6 +5460,10 @@ class StudesticsApp(tk.Tk):
         self.after(1600, self.prewarm_timer_background)
 
         self.bind("<F11>", self.toggle_fullscreen)
+
+        for key in ("<space>", "<KeyPress-l>", "<KeyPress-L>",
+                    "<KeyPress-r>", "<KeyPress-R>"):
+            self.bind(key, self._focus_keys, add="+")
         self.bind_all("<KeyPress>", self._zen_keys, add="+")
         self._install_text_shortcuts()
         self.bind("<Escape>", self._leave_fullscreen, add="+")
@@ -6988,6 +7027,14 @@ class StudesticsApp(tk.Tk):
             item.set_active(name == page_name)
 
         self._sidebar_timer_update()
+
+        self._float_update()
+
+        if page_name == "Focus Mode" and not getattr(
+            self, "_float_watching", False
+        ):
+            self._float_watching = True
+            self.after(400, self._float_watch)
 
         self.refresh_sidebar_upnext()
 
@@ -8992,10 +9039,12 @@ class StudesticsApp(tk.Tk):
 
         top.pack(fill="x", padx=18, pady=(14, 0))
 
-        tk.Label(
+        target_label = tk.Label(
             top, text="Daily focus target", bg=PANEL, fg=MUTED,
             font=("Segoe UI", 9)
-        ).pack(side="left")
+        )
+
+        target_label.pack(side="left")
 
         tk.Label(
             top,
@@ -9029,9 +9078,19 @@ class StudesticsApp(tk.Tk):
 
             reached = today_min >= goal
 
+            # Never show more than the goal (60 / 60, not 240 / 60).
             value.configure(
-                text=f"{today_min} / {goal} min",
+                text=f"{min(today_min, goal)} / {goal} min",
                 fg=GREEN if reached else PURPLE_HOVER
+            )
+
+            target_label.configure(
+                text=(
+                    "Daily focus target  \u00b7  Goal reached  \u00b7  "
+                    f"{fmt_duration(stats['today'])} focused today"
+                    if reached else "Daily focus target"
+                ),
+                fg=GREEN if reached else MUTED
             )
 
             bar.delete("all")
@@ -9221,13 +9280,22 @@ class StudesticsApp(tk.Tk):
 
         labels = {}
 
-        for name in ("Low", "Medium", "High"):
+        for index, name in enumerate(("Low", "Medium", "High")):
 
             color = priority_color(name)
 
+            if index:
+
+                tk.Frame(
+                    strip,
+                    bg=PURPLE,
+                    width=1,
+                    height=18
+                ).pack(side="left", padx=12)
+
             box = tk.Frame(strip, bg=BG)
 
-            box.pack(side="left", padx=(0, 14))
+            box.pack(side="left")
 
             tk.Label(
                 box,
@@ -9235,7 +9303,7 @@ class StudesticsApp(tk.Tk):
                 bg=BG,
                 fg=color,
                 font=("Segoe UI", 10, "bold"),
-                width=7,
+                width=6,
                 anchor="w"
             ).pack(side="left")
 
@@ -9245,11 +9313,11 @@ class StudesticsApp(tk.Tk):
                 bg=BG,
                 fg=TEXT,
                 font=("Segoe UI", 10),
-                width=8,
+                width=7,
                 anchor="w"
             )
 
-            value.pack(side="left", padx=(6, 0))
+            value.pack(side="left")
 
             labels[name] = value
 
@@ -9339,13 +9407,16 @@ class StudesticsApp(tk.Tk):
             pady=(0, 16)
         )
 
-        self.make_button(
-            toolbar,
-            "+ New task",
-            self.new_task_dialog
-        ).pack(
-            side="left"
-        )
+        if not self.tasks_show_completed:
+
+            self.make_button(
+                toolbar,
+                "+ New task",
+                self.new_task_dialog
+            ).pack(
+                side="left",
+                padx=(0, 8)
+            )
 
         self.make_button(
             toolbar,
@@ -9355,7 +9426,7 @@ class StudesticsApp(tk.Tk):
             width=9
         ).pack(
             side="left",
-            padx=8
+            padx=(0, 8)
         )
 
         def toggle_completed():
@@ -9667,19 +9738,49 @@ class StudesticsApp(tk.Tk):
         source_image = None
 
         if task["image_path"]:
-
-            try:
-
-                if Path(task["image_path"]).exists():
-
-                    source_image = Image.open(
-                        task["image_path"]
-                    ).convert("RGB")
-
-            except Exception:
-                source_image = None
+            source_image = self._card_image(task["image_path"])
 
         self._task_card_canvas(parent, task, source_image, card_height)
+
+    def _card_image(self, path):
+        """A task's picture, opened once and kept at a card-friendly
+        size, so showing the page again (or a page full of picture
+        cards) doesn't re-read and re-decode every full-size file."""
+
+        cache = self.__dict__.setdefault("_card_images", {})
+
+        try:
+
+            file = Path(path)
+
+            stamp = file.stat().st_mtime
+
+        except Exception:
+            return None
+
+        key = (str(path), stamp)
+
+        if key in cache:
+            return cache[key]
+
+        try:
+
+            image = Image.open(path)
+
+            # Cards are at most ~900 px wide; a bit more for sharpness.
+            image.thumbnail((1400, 1400), Image.LANCZOS)
+
+            image = image.convert("RGB")
+
+        except Exception:
+            return None
+
+        if len(cache) > 40:
+            cache.clear()
+
+        cache[key] = image
+
+        return image
 
     def _task_card_plain(
         self,
@@ -10481,17 +10582,55 @@ class StudesticsApp(tk.Tk):
 
             title = task["title"]
 
+            title_x = 18
+
             if is_completed:
-                title = "✓ " + title
+
+                # A small green tick badge (smooth, drawn big and
+                # scaled down) instead of a text tick.
+                badge_top = 20 + (title_font.metrics("linespace") - 20) // 2
+
+                canvas._etext_photos.append(
+                    ImageTk.PhotoImage(_tick_badge_image(20, GREEN))
+                )
+
+                canvas.create_image(
+                    17, badge_top,
+                    anchor="nw",
+                    image=canvas._etext_photos[-1],
+                    tags="card_text"
+                )
+
+                title_x = 46
+
+            shown_title = fit(
+                title, title_font, max_text_w - (title_x - 18)
+            )
 
             outlined(
-                18, 20,
+                title_x, 20,
                 anchor="nw",
-                text=fit(title, title_font, max_text_w),
+                text=shown_title,
                 font=title_font,
-                fill=GREEN if is_completed else ("#FFFFFF" if has_photo else TEXT),
+                fill=(
+                    mix_color(TEXT, MUTED, 0.45) if is_completed
+                    else ("#FFFFFF" if has_photo else TEXT)
+                ),
                 tags="card_text"
             )
+
+            if is_completed:
+
+                # Struck through: it's done.
+                line_y = 20 + title_font.metrics("linespace") // 2 + 1
+
+                canvas.create_line(
+                    title_x, line_y,
+                    title_x + title_font.measure(shown_title), line_y,
+                    fill=mix_color(TEXT, MUTED, 0.45),
+                    width=1,
+                    tags="card_text"
+                )
 
             # Photo cards skip the description — it would sit on top
             # of the busy part of the picture.
@@ -10537,17 +10676,29 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
-                # Coloured edge: red = overdue, amber = due soon,
-                # otherwise the card's accent colour.
-                self._edge_stripe(
-                    canvas,
-                    (
-                        due_color if due_state in ("overdue", "soon")
-                        else card_accent
-                    ),
-                    card_height,
-                    radius
+            elif is_completed:
+
+                outlined(
+                    18 + small_font.measure(meta), card_height - 20,
+                    anchor="sw",
+                    text="  \u2022  Completed",
+                    font=small_font,
+                    fill=GREEN,
+                    tags="card_text"
                 )
+
+            # Coloured edge: green = completed, red = overdue,
+            # amber = due soon, otherwise the card's accent colour.
+            self._edge_stripe(
+                canvas,
+                (
+                    GREEN if is_completed
+                    else due_color if due_state in ("overdue", "soon")
+                    else card_accent
+                ),
+                card_height,
+                radius
+            )
 
             for i, (x1, y1, x2, y2) in enumerate(rects):
 
@@ -10649,7 +10800,7 @@ class StudesticsApp(tk.Tk):
 
                 # A soft wash of the priority colour from the left, so
                 # plain cards have some colour like the picture ones.
-                if not is_completed:
+                if True:
 
                     wash = Image.new("L", (width, 1))
 
@@ -10667,7 +10818,7 @@ class StudesticsApp(tk.Tk):
                     composited = Image.composite(
                         Image.new(
                             "RGB", (width, card_height),
-                            _hex_rgb(card_accent)
+                            _hex_rgb(GREEN if is_completed else card_accent)
                         ),
                         composited,
                         wash
@@ -15326,14 +15477,64 @@ class StudesticsApp(tk.Tk):
             expand=True
         )
 
+        # ---- Timer / Stopwatch switch ----
+        tabs = tk.Frame(
+            panel,
+            bg=PANEL
+        )
+
+        tabs.pack(
+            pady=(18, 0)
+        )
+
         content = tk.Frame(
             panel,
             bg=PANEL
         )
 
         content.pack(
-            pady=(34, 0)
+            pady=(22, 0)
         )
+
+        stopwatch_view = self._build_stopwatch(panel)
+
+        tab_buttons = {}
+
+        def show_mode(mode):
+
+            self.focus_view = mode
+
+            for name, button in tab_buttons.items():
+                button.configure(selected=(name == mode))
+
+            if mode == "stopwatch":
+
+                content.pack_forget()
+
+                stopwatch_view.place(
+                    relx=0.5, rely=0.5, anchor="center"
+                )
+
+                stopwatch_view.lift()
+
+            else:
+
+                stopwatch_view.place_forget()
+
+                content.pack(pady=(22, 0), after=tabs)
+
+        for name, label in (("timer", "Timer"), ("stopwatch", "Stopwatch")):
+
+            button = self.make_button(
+                tabs,
+                label,
+                lambda n=name: show_mode(n),
+                width=11
+            )
+
+            button.pack(side="left", padx=4)
+
+            tab_buttons[name] = button
 
         # ---- the clock: same presets as the floating one ----
         geom = self._clock_geom()
@@ -15556,10 +15757,33 @@ class StudesticsApp(tk.Tk):
             padx=(6, 12)
         )
 
+        def apply_and_close(event=None):
+            """Set the length, then slide the Custom row shut."""
+
+            if self.apply_custom_focus():
+
+                custom_state["open"] = False
+
+                set_open(False)
+
+                # Give the keyboard back to the page, so Space starts
+                # the timer instead of typing into the box.
+                try:
+                    self.focus_set()
+                except Exception:
+                    pass
+
+            return "break"
+
+        self.custom_focus_entry.bind("<Return>", apply_and_close)
+        self.custom_focus_entry.bind("<KP_Enter>", apply_and_close)
+        self.custom_focus_sec_entry.bind("<Return>", apply_and_close)
+        self.custom_focus_sec_entry.bind("<KP_Enter>", apply_and_close)
+
         self.make_button(
             custom_row,
             "Set",
-            self.apply_custom_focus,
+            apply_and_close,
             width=6
         ).pack(
             side="left"
@@ -15572,7 +15796,7 @@ class StudesticsApp(tk.Tk):
         )
 
         controls.pack(
-            pady=(22, 34)
+            pady=(22, 12)
         )
 
         self.focus_start_button = self.make_button(
@@ -15602,6 +15826,14 @@ class StudesticsApp(tk.Tk):
             padx=5
         )
 
+        tk.Label(
+            content,
+            text="Space  start / pause     R  reset",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(pady=(0, 24))
+
         # Made before the drawer, so the drawer slides over them.
         self._build_focus_corner(panel)
 
@@ -15611,8 +15843,375 @@ class StudesticsApp(tk.Tk):
         self._refresh_focus_presets()
         self.update_focus_ui()
 
+        show_mode(getattr(self, "focus_view", "timer"))
+
         # Get the timer background ready for the full screen view.
         self.prewarm_timer_background()
+
+    # --------------------------------------------------------
+    # Stopwatch
+    # --------------------------------------------------------
+
+    def _focus_keys(self, event):
+        """Space = start / pause, L = lap (stopwatch), R = reset, on
+        the Focus page. Ignored while typing or while a dialog is
+        open."""
+
+        try:
+
+            if self.current_page != "Focus Mode":
+                return
+
+            if self.grab_current() is not None:
+                return
+
+            if event.widget.winfo_class() in (
+                "Entry", "Text", "TEntry", "Spinbox"
+            ):
+                return
+
+            key = event.keysym.lower()
+
+            if getattr(self, "focus_view", "timer") == "stopwatch":
+
+                actions = getattr(self, "_sw_actions", None)
+
+                if not actions:
+                    return
+
+                if key == "space":
+                    actions["toggle"]()
+                elif key == "l":
+                    actions["lap"]()
+                elif key == "r":
+                    actions["reset"]()
+                else:
+                    return
+
+            else:
+
+                if key == "space":
+                    self.toggle_focus()
+                elif key == "r":
+                    self.reset_focus_or_skip()
+                else:
+                    return
+
+            return "break"
+
+        except Exception:
+            return
+
+    def _stopwatch_state(self):
+
+        return self.__dict__.setdefault(
+            "_sw",
+            {
+                "running": False,
+                "base": 0.0,
+                "started": 0.0,
+                "logged": 0,
+                "laps": []
+            }
+        )
+
+    def _stopwatch_elapsed(self):
+
+        sw = self._stopwatch_state()
+
+        if sw["running"]:
+            return sw["base"] + time.time() - sw["started"]
+
+        return sw["base"]
+
+    def _stopwatch_log(self):
+        """Adds the stopwatch time not yet counted to your focus
+        stats (once it adds up to a minute, so accidental starts
+        don't clutter the stats)."""
+
+        sw = self._stopwatch_state()
+
+        elapsed = int(self._stopwatch_elapsed())
+
+        extra = elapsed - sw["logged"]
+
+        if extra < 60:
+            return
+
+        try:
+
+            task = self._focus_task()
+
+            self.db.add_focus_session(
+                task["id"] if task is not None else None,
+                task["title"] if task is not None else "",
+                extra,
+                extra,
+                True,
+                0
+            )
+
+            sw["logged"] = elapsed
+
+        except Exception:
+            pass
+
+    def _build_stopwatch(self, parent):
+        """The Stopwatch view of the Focus page: a ring that sweeps
+        once a minute, the time, Start / Pause, Lap and Reset."""
+
+        sw = self._stopwatch_state()
+
+        frame = tk.Frame(parent, bg=PANEL)
+
+        size = 300
+
+        canvas = tk.Canvas(
+            frame,
+            width=size,
+            height=size,
+            bg=PANEL,
+            highlightthickness=0,
+            bd=0
+        )
+
+        canvas.pack()
+
+        ring_state = {"key": None, "photo": None}
+
+        ring_item = canvas.create_image(
+            size / 2, size / 2, anchor="center"
+        )
+
+        time_item = canvas.create_text(
+            size / 2, size / 2 - 6,
+            text="00:00",
+            fill=TEXT,
+            font=("Segoe UI", -56, "bold")
+        )
+
+        sub_item = canvas.create_text(
+            size / 2, size / 2 + 44,
+            text=".00",
+            fill=MUTED,
+            font=("Segoe UI", -22)
+        )
+
+        def draw_ring(fraction, running):
+
+            key = (int(fraction * 240), running)
+
+            if key == ring_state["key"]:
+                return
+
+            ring_state["key"] = key
+
+            if not HAS_PIL:
+                return
+
+            scale = 3
+            box = size * scale
+
+            img = Image.new("RGB", (box, box), PANEL)
+
+            draw = ImageDraw.Draw(img)
+
+            pad = 14 * scale
+            thick = 12 * scale
+
+            draw.ellipse(
+                [pad, pad, box - pad, box - pad],
+                outline=_theme_mix(PANEL, TEXT, 0.12),
+                width=thick
+            )
+
+            if fraction > 0:
+
+                draw.arc(
+                    [pad, pad, box - pad, box - pad],
+                    start=-90,
+                    end=-90 + 360 * fraction,
+                    fill=PURPLE_HOVER if running else MUTED,
+                    width=thick
+                )
+
+            ring_state["photo"] = ImageTk.PhotoImage(
+                img.resize((size, size), Image.LANCZOS)
+            )
+
+            canvas.itemconfigure(ring_item, image=ring_state["photo"])
+
+        lap_label = tk.Label(
+            frame,
+            text="",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            justify="center"
+        )
+
+        def show_laps():
+
+            laps = sw["laps"][-3:]
+
+            lap_label.configure(
+                text="\n".join(
+                    f"Lap {len(sw['laps']) - len(laps) + i + 1}   "
+                    f"{self._stopwatch_text(total)[0]}"
+                    f"{self._stopwatch_text(total)[1]}"
+                    for i, total in enumerate(laps)
+                )
+            )
+
+        def refresh():
+
+            try:
+
+                if not canvas.winfo_exists():
+                    return
+
+            except Exception:
+                return
+
+            elapsed = self._stopwatch_elapsed()
+
+            main, fraction_text = self._stopwatch_text(elapsed)
+
+            canvas.itemconfigure(time_item, text=main)
+            canvas.itemconfigure(sub_item, text=fraction_text)
+
+            draw_ring((elapsed % 60) / 60.0, sw["running"])
+
+            start_button.configure(
+                text="Pause" if sw["running"] else (
+                    "Resume" if sw["base"] > 0 else "Start"
+                )
+            )
+
+            canvas.after(50, refresh)
+
+        def toggle():
+
+            if sw["running"]:
+
+                sw["base"] += time.time() - sw["started"]
+                sw["running"] = False
+
+                self._stopwatch_log()
+
+            else:
+
+                if self.focus_running:
+
+                    note.configure(
+                        text="Pause the timer first, then start the "
+                             "stopwatch."
+                    )
+
+                    return
+
+                note.configure(text="")
+
+                sw["started"] = time.time()
+                sw["running"] = True
+
+        def lap():
+
+            if not sw["running"] and sw["base"] <= 0:
+                return
+
+            sw["laps"].append(self._stopwatch_elapsed())
+
+            show_laps()
+
+        def reset():
+
+            if sw["running"] or sw["base"] > 0:
+
+                if sw["running"]:
+
+                    sw["base"] += time.time() - sw["started"]
+                    sw["running"] = False
+
+                self._stopwatch_log()
+
+            sw["base"] = 0.0
+            sw["logged"] = 0
+            sw["laps"] = []
+
+            show_laps()
+
+        self._sw_actions = {
+            "toggle": toggle,
+            "lap": lap,
+            "reset": reset
+        }
+
+        controls = tk.Frame(frame, bg=PANEL)
+
+        controls.pack(pady=(14, 0))
+
+        start_button = self.make_button(
+            controls, "Start", toggle, width=12
+        )
+
+        start_button.configure(selected=True)
+
+        start_button.pack(side="left", padx=5)
+
+        self.make_button(
+            controls, "Lap", lap, width=8
+        ).pack(side="left", padx=5)
+
+        self.make_button(
+            controls, "Reset", reset, width=8
+        ).pack(side="left", padx=5)
+
+        note = tk.Label(
+            frame,
+            text="",
+            bg=PANEL,
+            fg=YELLOW,
+            font=("Segoe UI", 9)
+        )
+
+        note.pack(pady=(10, 0))
+
+        tk.Label(
+            frame,
+            text="Space  start / pause     L  lap     R  reset",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(pady=(2, 0))
+
+        lap_label.pack(pady=(8, 30))
+
+        show_laps()
+
+        refresh()
+
+        return frame
+
+    @staticmethod
+    def _stopwatch_text(seconds):
+        """(main, fraction): 01:23 and .45, or 1:02:03 and .45."""
+
+        seconds = max(0.0, seconds)
+
+        whole = int(seconds)
+
+        hundredths = int((seconds - whole) * 100)
+
+        hours, rest = divmod(whole, 3600)
+        minutes, secs = divmod(rest, 60)
+
+        main = (
+            f"{hours}:{minutes:02d}:{secs:02d}" if hours
+            else f"{minutes:02d}:{secs:02d}"
+        )
+
+        return main, f".{hundredths:02d}"
 
     def _make_reveal(self, parent, bg):
         """A frame that slides open/shut with an ease-out animation.
@@ -15964,6 +16563,8 @@ class StudesticsApp(tk.Tk):
         self.set_focus_total(
             total
         )
+
+        return True
 
     def toggle_focus(self):
 
@@ -17371,6 +17972,53 @@ class StudesticsApp(tk.Tk):
         self._float_size = size
         self._float_key = None
 
+    def _app_in_front(self):
+        """True while this app's window is on screen and in front
+        (not minimised, not behind another app, not on Show desktop)."""
+
+        try:
+
+            if self.state() == "iconic":
+                return False
+
+            if sys.platform != "win32":
+                return True
+
+            import ctypes
+            from ctypes import wintypes
+
+            fg = foreground_window_handle()
+
+            if not fg:
+                return False
+
+            pid = wintypes.DWORD(0)
+
+            _user32().GetWindowThreadProcessId(
+                fg, ctypes.byref(pid)
+            )
+
+            return int(pid.value) == os.getpid()
+
+        except Exception:
+            return True
+
+    def _float_watch(self):
+        """While on the Focus page, notice when the window is
+        minimised or another app comes to the front, so the floating
+        timer can step back in."""
+
+        if self._quitting or self.current_page != "Focus Mode":
+            self._float_watching = False
+            return
+
+        try:
+            self._float_update()
+        except Exception:
+            pass
+
+        self.after(400, self._float_watch)
+
     def _float_update(self):
         """Show, redraw or close the floating timer to match the
         focus timer. Cheap: it only redraws when something changed."""
@@ -17385,10 +18033,16 @@ class StudesticsApp(tk.Tk):
             if not active:
                 self._float_user_hidden = False
 
+            # The Focus page already shows the timer, so the floating
+            # one steps aside while you are on it.
             if not (
                 self.float_on
                 and active
                 and not self._float_user_hidden
+                and not (
+                    self.current_page == "Focus Mode"
+                    and self._app_in_front()
+                )
             ):
 
                 self._float_close()
@@ -31140,7 +31794,7 @@ class StudesticsApp(tk.Tk):
 
                 while not stop.is_set():
 
-                    stop.wait(0.2)
+                    stop.wait(0.05)
 
                     error, mode = mci_send(f"status {alias} mode")
 
@@ -31149,7 +31803,8 @@ class StudesticsApp(tk.Tk):
                         if not continuous:
                             break
 
-                        stop.wait(0.8)
+                        # Short pause, then the sound comes round again.
+                        stop.wait(0.2)
 
                         if stop.is_set():
                             break
@@ -31210,7 +31865,7 @@ class StudesticsApp(tk.Tk):
                 if not continuous:
                     return
 
-                stop.wait(1.0)
+                stop.wait(0.3)
 
         def worker():
 
