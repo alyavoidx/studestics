@@ -58,7 +58,7 @@ class _ThemedMessageBox:
 messagebox = _ThemedMessageBox()
 
 try:
-    from PIL import Image, ImageDraw, ImageTk, ImageFilter, ImageEnhance, ImageFont
+    from PIL import Image, ImageDraw, ImageTk, ImageFilter, ImageEnhance, ImageFont, ImageChops
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.5"
+VERSION = "1.6.6"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -1195,6 +1195,23 @@ def format_date(value):
         return value
 
 
+def label_color(i, has_photo, actions, state):
+    """Text colour of a card button."""
+
+    kind = actions[i]["kind"]
+
+    if has_photo:
+        return "#FFFFFF"
+
+    if kind == "primary":
+        return "#1B1230"
+
+    if kind == "danger":
+        return "#FFFFFF" if state["hover"] == i else RED
+
+    return TEXT
+
+
 def priority_color(priority):
     if priority == "High":
         return RED
@@ -1219,6 +1236,11 @@ FOCUS_DRAWER_WIDTH = 350
 DEFAULT_NUDGE_WORDS = (
     "instagram, reels, tiktok, facebook, snapchat, netflix, twitch, shorts"
 )
+
+
+# Windows that are never a distraction even though they contain a
+# distraction word (YouTube Music is for listening, not scrolling).
+NUDGE_ALLOWED = ("youtube music",)
 
 
 # One-click additions shown in the Nudge words dialog.
@@ -2101,7 +2123,7 @@ def _span_text(seconds):
 
 def due_info(deadline, now=None):
     """(state, label, colour) for a deadline string. state is
-    'none', 'overdue', 'soon' (within a day) or 'ok'."""
+    'none', 'overdue', 'soon' (within a day) or 'ok' (later)."""
 
     dt = deadline_dt(deadline)
 
@@ -2123,7 +2145,8 @@ def due_info(deadline, now=None):
     if secs <= DUE_SOON_SECONDS:
         return "soon", f"Due in {_span_text(secs)}", YELLOW
 
-    return "ok", "", None
+    # Further away: still shown, just in a calmer colour.
+    return "ok", f"Due in {_span_text(secs)}", MUTED
 
 
 def fmt_duration(seconds):
@@ -3397,6 +3420,21 @@ class Database:
                 (int(limit),)
             ).fetchall()
 
+    def focus_day_details(self, day):
+        """The focus sessions on one day (YYYY-MM-DD), oldest first."""
+
+        with self.lock:
+
+            return self.connection.execute(
+                """
+                SELECT task_title, actual_seconds, completed, nudges
+                FROM focus_sessions
+                WHERE day = ?
+                ORDER BY id
+                """,
+                (day,)
+            ).fetchall()
+
     def focus_daily_seconds(self, days=7):
         """[(YYYY-MM-DD, seconds), ...] oldest first, ending today,
         with 0 for days that have no sessions."""
@@ -3591,6 +3629,7 @@ love ❤️|hearts 💕|love_heart 💗|thumbs_up 👍|thumbs_down 👎|laugh �
 lmao 🤣|happy 😊|sad 😢|crying 😭|ok 👌|hi 👋|bye 👋|lit 🔥|thanks 🙏
 thank_you 🙏|please 🥺|oof 😬|rip 💀|dead 💀|mindblown 🤯|think 🤔|sus 🤨
 cheers 🥂|hungry 🍽️|study 📚|sleep 😴|work 💼|good_luck 🤞|congrats 🎉
+tick ✅|check ✅|check_mark ✅|white_check_mark ✅|done ✅|checkmark ✅|heavy_check_mark ✔️|ballot_box_with_check ☑️
 """
 
 EMOJI_SHORTCODES = {}
@@ -4541,6 +4580,55 @@ class RoundedButton:
 _PANEL_CORNERS = {}
 
 
+_EDGE_STRIPES = {}
+
+
+def _edge_stripe_image(color, height, radius, thickness=5):
+    """The coloured edge on the left of a card, as a Pillow image.
+    It runs the whole height, curves round the card's rounded
+    corners, gets thinner and fades to nothing where it reaches the
+    top and bottom. Cached."""
+
+    key = (color, height, radius, thickness)
+
+    if key in _EDGE_STRIPES:
+        return _EDGE_STRIPES[key]
+
+    scale = 4
+
+    width = radius + thickness + 6
+
+    def shape(shift):
+
+        layer = Image.new("L", (width * scale, height * scale), 0)
+
+        ImageDraw.Draw(layer).rounded_rectangle(
+            [
+                shift * scale, 0,
+                (width + 4 * radius) * scale, height * scale - 1
+            ],
+            radius=radius * scale,
+            fill=255
+        )
+
+        return layer
+
+    # The card's outline minus the same outline moved right: a
+    # crescent that is thickest on the straight left side.
+    crescent = ImageChops.subtract(shape(0), shape(thickness))
+
+    stripe = Image.new("RGBA", (width, height), color)
+
+    stripe.putalpha(crescent.resize((width, height), Image.LANCZOS))
+
+    if len(_EDGE_STRIPES) > 200:
+        _EDGE_STRIPES.clear()
+
+    _EDGE_STRIPES[key] = stripe
+
+    return stripe
+
+
 def _panel_corner_images(radius, accent=None, fill=None, outside=None,
                          border=None):
     """The four anti-aliased rounded corners (radius x radius each)
@@ -4618,6 +4706,42 @@ class StudesticsApp(tk.Tk):
         # ----------------------------------------------------
 
         super().__init__()
+
+        # Start-up animation on/off (read straight from the settings
+        # file: the database object doesn't exist yet).
+        self._splash_anim = True
+
+        try:
+
+            peek = sqlite3.connect(DB_PATH)
+
+            row = peek.execute(
+                "SELECT value FROM settings WHERE key='startup_animation'"
+            ).fetchone()
+
+            peek.close()
+
+            if row and row[0] == "0":
+                self._splash_anim = False
+
+        except Exception:
+            pass
+
+        # Stay invisible until the first frame is painted, then fade
+        # in: otherwise Windows can flash a blank white box while the
+        # window is created.
+        if (
+            self._splash_anim
+            and "--background" not in sys.argv
+            and sys.platform == "win32"
+        ):
+
+            try:
+                self.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+
+            self.after(120, self._reveal_window)
 
         messagebox.app = self
 
@@ -4714,6 +4838,7 @@ class StudesticsApp(tk.Tk):
         # Pomodoro + distraction nudge
         self.focus_phase = "focus"      # focus | short | long
         self.pomo_enabled = False
+        self.glass_plain = False
         self.pomo_done = 0              # focus rounds finished in this set
         self.focus_reset_button = None
         self.focus_pomo_button = None
@@ -5282,6 +5407,9 @@ class StudesticsApp(tk.Tk):
 
         self._title_bar_hook()
 
+        # Same purple window border as the pop-ups.
+        self._glow = PURPLE
+
         self._paint_titlebar(self)
 
         try:
@@ -5290,9 +5418,7 @@ class StudesticsApp(tk.Tk):
         except Exception:
             pass
 
-        self.show_page(
-            "Dashboard"
-        )
+        self._first_page_fade()
 
         self.start_reminders()
 
@@ -5343,6 +5469,130 @@ class StudesticsApp(tk.Tk):
                 150,
                 self.ask_name
             )
+
+    def _reveal_window(self, i=0):
+        """Fade the freshly painted window in (start-up)."""
+
+        steps = 8
+
+        if getattr(self, "_reveal_stop", False):
+            return
+
+        try:
+            self.attributes("-alpha", min(1.0, i / steps))
+        except Exception:
+            return
+
+        if i < steps:
+            self.after(16, lambda: self._reveal_window(i + 1))
+
+    def _first_page_fade(self):
+        """Start-up hand-over. The full-window splash stays up (long
+        enough for its intro to finish) while the Dashboard is built
+        behind it, then lifts away like a curtain. Nothing goes
+        transparent, so the window never vanishes."""
+
+        self._reveal_stop = True
+
+        try:
+            self.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
+        screen = self.startup_screen
+
+        hidden = (
+            "--background" in sys.argv
+            or screen is None
+            or not self._splash_anim
+            or self.state() == "withdrawn"
+        )
+
+        if hidden:
+
+            self.show_page("Dashboard")
+            self._remove_splash()
+
+            return
+
+        # Keep clear_page from destroying the splash.
+        self.startup_screen = None
+
+        def reveal():
+
+            try:
+                self.show_page("Dashboard")
+                self.update_idletasks()
+                screen.lift()
+            except Exception:
+                pass
+
+            lift_away()
+
+        def lift_away(i=0, steps=22):
+
+            try:
+
+                height = max(1, self.winfo_height())
+
+                t = i / steps
+
+                eased = t * t * (3 - 2 * t)
+
+                screen.place(
+                    x=0,
+                    y=-int(height * eased),
+                    relwidth=1,
+                    relheight=1
+                )
+
+                screen.lift()
+
+            except Exception:
+
+                self._remove_splash(screen)
+
+                return
+
+            if i < steps:
+
+                self.after(14, lambda: lift_away(i + 1, steps))
+
+            else:
+
+                self._remove_splash(screen)
+
+        wait = max(
+            0,
+            int(
+                (1.3 - (time.time() - getattr(
+                    self, "_splash_start", time.time()
+                ))) * 1000
+            )
+        )
+
+        self.after(wait, reveal)
+
+    def _remove_splash(self, screen=None):
+
+        self._splash = None
+
+        try:
+            if self._splash_job:
+                self.after_cancel(self._splash_job)
+        except Exception:
+            pass
+
+        screen = screen or self.startup_screen
+
+        if screen is not None:
+
+            try:
+                screen.destroy()
+            except Exception:
+                pass
+
+        self.startup_screen = None
 
     def load_preferences(self):
 
@@ -5423,6 +5673,25 @@ class StudesticsApp(tk.Tk):
             self.db.get_setting("pomodoro", "0") == "1"
         )
 
+        # The long break can be set (5-30 min); the short one is fixed.
+        self.pomo_short = POMO_SHORT
+        self.pomo_long = POMO_LONG
+
+        try:
+
+            minutes = int(self.db.get_setting("pomo_long_min", "15"))
+
+        except ValueError:
+
+            minutes = 15
+
+        self.pomo_long = max(5, min(30, minutes)) * 60
+
+        # Experimental: glass buttons on cards without a picture too.
+        self.glass_plain = (
+            self.db.get_setting("glass_plain", "0") == "1"
+        )
+
         self.nudge_on = (
             self.db.get_setting("nudge_enabled", "1") == "1"
         )
@@ -5461,6 +5730,174 @@ class StudesticsApp(tk.Tk):
         except ValueError:
 
             self.float_pos = None
+
+    def _splash_tick(self):
+        """One frame of the start-up animation. The items are created
+        once and only moved / recoloured afterwards, so each frame is
+        cheap. Once the intro is over it only keeps things centred."""
+
+        canvas = getattr(self, "_splash", None)
+
+        if canvas is None:
+            return
+
+        try:
+
+            if not canvas.winfo_exists():
+                return
+
+            width = canvas.winfo_width()
+            height = canvas.winfo_height()
+
+            if width < 50 or height < 50:
+                self._splash_job = self.after(16, self._splash_tick)
+                return
+
+            state = getattr(self, "_splash_state", None)
+
+            size = 96
+
+            if state is None:
+
+                title_font = tkfont.Font(
+                    family="Segoe UI", size=34, weight="bold"
+                )
+                sub_font = tkfont.Font(family="Segoe UI", size=11)
+
+                state = self._splash_state = {
+                    "size": (width, height),
+                    "key": -1,
+                    "colour": None,
+                    "title_font": title_font,
+                    "sub_font": sub_font,
+                    "image": canvas.create_image(
+                        0, 0, anchor="center"
+                    ),
+                    "title": canvas.create_text(
+                        0, 0, text="Studestics", anchor="n",
+                        fill=BG, font=title_font, state="hidden"
+                    ),
+                    "sub": canvas.create_text(
+                        0, 0, text="Your study workspace", anchor="n",
+                        fill=BG, font=sub_font, state="hidden"
+                    ),
+                    "status": canvas.create_window(
+                        0, 0, anchor="n", window=self.startup_status,
+                        state="hidden"
+                    ),
+                    "error": canvas.create_window(
+                        0, 0, anchor="n", window=self.startup_error,
+                        state="hidden"
+                    )
+                }
+
+                # All 21 fade levels of the logo, drawn once, up front.
+                if HAS_PIL:
+
+                    logo = app_icon_image(size * 2).resize(
+                        (size, size), Image.LANCZOS
+                    ).convert("RGBA")
+
+                    alpha_band = logo.getchannel("A")
+
+                    for key in range(21):
+
+                        frame = logo.copy()
+
+                        frame.putalpha(
+                            alpha_band.point(
+                                lambda v, f=key / 20: int(v * f)
+                            )
+                        )
+
+                        base = Image.new("RGBA", (size, size), BG)
+                        base.alpha_composite(frame)
+
+                        self._splash_photos[key] = ImageTk.PhotoImage(
+                            base.convert("RGB")
+                        )
+
+                if self._splash_anim:
+                    self._splash_start = time.time()
+
+            elapsed = time.time() - self._splash_start
+
+            def ease(t):
+
+                t = max(0.0, min(1.0, t))
+
+                return 1 - (1 - t) ** 3
+
+            move = ease(elapsed / 0.8)
+            fade = ease(elapsed / 0.6)
+            text_fade = ease((elapsed - 0.7) / 0.45)
+
+            cx = width / 2
+            rest_y = height / 2 - 50
+            start_y = height + 60
+
+            canvas.coords(
+                state["image"],
+                cx,
+                start_y + (rest_y - start_y) * move
+            )
+
+            key = int(fade * 20)
+
+            if key != state["key"] and key in self._splash_photos:
+
+                canvas.itemconfigure(
+                    state["image"], image=self._splash_photos[key]
+                )
+
+                state["key"] = key
+
+            title_font = state["title_font"]
+            sub_font = state["sub_font"]
+
+            y = rest_y + size / 2 + 30
+
+            canvas.coords(state["title"], cx, y)
+
+            y += title_font.metrics("linespace") + 10
+
+            canvas.coords(state["sub"], cx, y)
+
+            y += sub_font.metrics("linespace") + 22
+
+            canvas.coords(state["status"], cx, y)
+
+            canvas.coords(state["error"], cx, y + 34)
+
+            level = int(text_fade * 16)
+
+            if level != state["colour"]:
+
+                # Hidden (not just dark) until the logo has arrived, so
+                # nothing shows through or over it on the way up.
+                shown = "normal" if level > 0 else "hidden"
+
+                for name in ("title", "sub", "status", "error"):
+
+                    canvas.itemconfigure(state[name], state=shown)
+
+                canvas.itemconfigure(
+                    state["title"], fill=mix_color(BG, TEXT, level / 16)
+                )
+
+                canvas.itemconfigure(
+                    state["sub"], fill=mix_color(BG, MUTED, level / 16)
+                )
+
+                state["colour"] = level
+
+            if elapsed < 1.3:
+                self._splash_job = self.after(8, self._splash_tick)
+            else:
+                self._splash_job = self.after(250, self._splash_tick)
+
+        except Exception:
+            pass
 
     def set_startup_status(self, text):
 
@@ -5590,17 +6027,92 @@ class StudesticsApp(tk.Tk):
         # show_page(). Packed right after the nav list (normal top-down
         # flow), not anchored to the bottom, so it sits directly under
         # Settings instead of pinned below the sign-in line.
-        self.sidebar_upnext_frame = tk.Frame(
-            self.sidebar,
-            bg=SIDEBAR
-        )
+        # The lists live in a scrollable area that fills whatever room is
+        # left above Settings, so nothing ever gets cut off or overlaps.
+        self._upnext_outer = tk.Frame(self.sidebar, bg=SIDEBAR)
 
-        self.sidebar_upnext_frame.pack(
+        self._upnext_outer.pack(
             side="top",
-            fill="x",
+            fill="both",
+            expand=True,
             padx=20,
             pady=(16, 0)
         )
+
+        # A thin line at the bottom of this area, so it sits right above
+        # Settings (like the one above Top tasks).
+        tk.Frame(
+            self._upnext_outer,
+            bg=mix_color(PURPLE, SIDEBAR, 0.2),
+            height=1
+        ).pack(side="bottom", fill="x", pady=(8, 0))
+
+        self._upnext_canvas = tk.Canvas(
+            self._upnext_outer,
+            bg=SIDEBAR,
+            highlightthickness=0,
+            bd=0,
+            height=1,
+            yscrollincrement=24
+        )
+
+        self._upnext_canvas.pack(fill="both", expand=True)
+
+        # The line above Top tasks stays put while the lists scroll.
+        self._upnext_top_line = tk.Frame(
+            self._upnext_outer,
+            bg=mix_color(PURPLE, SIDEBAR, 0.2),
+            height=1
+        )
+
+        self.sidebar_upnext_frame = tk.Frame(
+            self._upnext_canvas,
+            bg=SIDEBAR
+        )
+
+        self._upnext_window = self._upnext_canvas.create_window(
+            (0, 0), window=self.sidebar_upnext_frame, anchor="nw"
+        )
+
+        def upnext_resized(event):
+
+            self._upnext_canvas.itemconfigure(
+                self._upnext_window, width=event.width
+            )
+
+        def upnext_content(event):
+
+            self._upnext_canvas.configure(
+                scrollregion=self._upnext_canvas.bbox("all")
+            )
+
+        self._upnext_canvas.bind("<Configure>", upnext_resized)
+        self.sidebar_upnext_frame.bind("<Configure>", upnext_content)
+
+        def upnext_wheel(event):
+
+            canvas = self._upnext_canvas
+
+            try:
+
+                if self.sidebar_upnext_frame.winfo_reqheight() <= (
+                    canvas.winfo_height()
+                ):
+                    canvas.yview_moveto(0)
+                    return None
+
+                canvas.yview_scroll(
+                    -1 if event.delta > 0 else 1, "units"
+                )
+
+            except Exception:
+                pass
+
+            return "break"
+
+        self._upnext_wheel = upnext_wheel
+
+        self._upnext_canvas.bind("<MouseWheel>", upnext_wheel)
 
         # Live timer card: only shows while a focus timer is active
         # and you are on another page.
@@ -5801,6 +6313,19 @@ class StudesticsApp(tk.Tk):
             pady=(0, 4)
         )
 
+        # Settings and the profile are packed first, so on a short window
+        # it's the Top tasks / Active goals that lose room, never these.
+        try:
+
+            first = self.sidebar.pack_slaves()[0]
+
+            self.sidebar_chip.pack_configure(before=first)
+
+            self._settings_nav.pack_configure(after=self.sidebar_chip)
+
+        except Exception:
+            pass
+
         # ----------------------------------------------------
         # Main
         # ----------------------------------------------------
@@ -5820,48 +6345,40 @@ class StudesticsApp(tk.Tk):
         # Startup screen
         # ----------------------------------------------------
 
+        # A full-window splash (it covers the sidebar too): the logo
+        # rises from the bottom to the middle while fading in.
         self.startup_screen = tk.Frame(
-            self.main,
+            self,
             bg=BG
         )
 
-        self.startup_screen.pack(
-            fill="both",
-            expand=True
+        self.startup_screen.place(
+            x=0, y=0, relwidth=1, relheight=1
         )
 
-        tk.Label(
+        self.startup_screen.lift()
+
+        splash = tk.Canvas(
             self.startup_screen,
-            text="Studestics",
             bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 34, "bold")
-        ).pack(
-            pady=(220, 8)
+            highlightthickness=0,
+            bd=0
         )
 
-        tk.Label(
-            self.startup_screen,
-            text="Your study workspace",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 11)
-        ).pack()
+        splash.pack(fill="both", expand=True)
+
+        self._splash = splash
 
         self.startup_status = tk.Label(
-            self.startup_screen,
+            splash,
             text="Starting...",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9)
         )
 
-        self.startup_status.pack(
-            pady=20
-        )
-
         self.startup_error = tk.Label(
-            self.startup_screen,
+            splash,
             text="",
             bg=BG,
             fg=RED,
@@ -5869,7 +6386,15 @@ class StudesticsApp(tk.Tk):
             wraplength=650
         )
 
-        self.startup_error.pack()
+        # With the animation off, the splash starts already finished.
+        self._splash_start = (
+            time.time() if self._splash_anim else time.time() - 10
+        )
+        self._splash_photos = {}
+        self._splash_job = None
+        self._splash_state = None
+
+        self._splash_tick()
 
     # ========================================================
     # UI HELPERS
@@ -6050,7 +6575,8 @@ class StudesticsApp(tk.Tk):
         self,
         parent,
         initial="Medium",
-        button_width=None
+        button_width=None,
+        on_select=None
     ):
         """Three color-coded pill buttons (Low/Medium/High) instead of
         a native ttk.Combobox, which carries OS theming and looks
@@ -6084,6 +6610,13 @@ class StudesticsApp(tk.Tk):
                 button.configure(
                     selected=(option_name == name)
                 )
+
+            if on_select:
+
+                try:
+                    on_select(name)
+                except Exception:
+                    pass
 
         for name, color in options:
 
@@ -6859,6 +7392,209 @@ class StudesticsApp(tk.Tk):
             pady=(2, 0)
         )
 
+    def _header_stat(self, parent, label, value, color, fraction,
+                     caption, column):
+        """A tinted rounded tile: label, big number, a thin progress
+        bar and a small caption."""
+
+        parent.grid_columnconfigure(column, weight=1, uniform="pstat")
+
+        canvas = tk.Canvas(
+            parent,
+            height=112,
+            bg=PANEL,
+            highlightthickness=0,
+            bd=0
+        )
+
+        canvas.grid(row=0, column=column, sticky="nsew", padx=6)
+
+        value_font = tkfont.Font(family="Segoe UI", size=24, weight="bold")
+        label_font = tkfont.Font(family="Segoe UI", size=9)
+
+        def draw(event=None):
+
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+
+            if w < 40 or h < 40:
+                return
+
+            canvas.delete("all")
+
+            if HAS_PIL:
+
+                scale = 4
+
+                img = Image.new("RGB", (w * scale, h * scale), PANEL)
+
+                ImageDraw.Draw(img).rounded_rectangle(
+                    [0, 0, w * scale - 1, h * scale - 1],
+                    radius=14 * scale,
+                    fill=mix_color(PANEL, color, 0.09),
+                    outline=mix_color(PANEL, color, 0.30),
+                    width=scale
+                )
+
+                canvas._tile = ImageTk.PhotoImage(
+                    img.resize((w, h), Image.LANCZOS)
+                )
+
+                canvas.create_image(0, 0, anchor="nw", image=canvas._tile)
+
+            canvas.create_oval(
+                16, 17, 24, 25,
+                fill=color,
+                outline=""
+            )
+
+            canvas.create_text(
+                32, 21,
+                anchor="w",
+                text=label,
+                fill=mix_color(PANEL, TEXT, 0.7),
+                font=label_font
+            )
+
+            canvas.create_text(
+                16, 52,
+                anchor="w",
+                text=value,
+                fill=color,
+                font=value_font
+            )
+
+            bar_x0, bar_x1, bar_y = 16, w - 16, h - 32
+
+            canvas.create_line(
+                bar_x0, bar_y, bar_x1, bar_y,
+                fill=mix_color(PANEL, color, 0.2),
+                width=5,
+                capstyle="round"
+            )
+
+            filled = max(0.0, min(1.0, fraction))
+
+            if filled > 0:
+
+                canvas.create_line(
+                    bar_x0, bar_y,
+                    bar_x0 + (bar_x1 - bar_x0) * filled, bar_y,
+                    fill=color,
+                    width=5,
+                    capstyle="round"
+                )
+
+            canvas.create_text(
+                16, h - 14,
+                anchor="w",
+                text=f"{round(fraction * 100)}% {caption}",
+                fill=MUTED_2,
+                font=label_font
+            )
+
+        canvas.bind("<Configure>", draw)
+
+    def _pill(self, parent, text, color):
+        """A small rounded tag: tinted background, coloured text."""
+
+        font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+
+        w = font.measure(text) + 26
+        h = 26
+
+        canvas = tk.Canvas(
+            parent,
+            width=w,
+            height=h,
+            bg=PANEL,
+            highlightthickness=0,
+            bd=0
+        )
+
+        if HAS_PIL:
+
+            scale = 4
+
+            img = Image.new("RGB", (w * scale, h * scale), PANEL)
+
+            ImageDraw.Draw(img).rounded_rectangle(
+                [0, 0, w * scale - 1, h * scale - 1],
+                radius=h * scale // 2,
+                fill=mix_color(PANEL, color, 0.16),
+                outline=mix_color(PANEL, color, 0.45),
+                width=scale
+            )
+
+            canvas._photo = ImageTk.PhotoImage(
+                img.resize((w, h), Image.LANCZOS)
+            )
+
+            canvas.create_image(0, 0, anchor="nw", image=canvas._photo)
+
+        canvas.create_text(
+            w / 2, h / 2,
+            text=text,
+            fill=color,
+            font=font
+        )
+
+        return canvas
+
+    def _profile_tile(self, parent, label, value, color, caption, column):
+        """One headline number in its own rounded card."""
+
+        outer, inner = self.rounded_panel(
+            parent,
+            radius=16,
+            accent=color,
+            fit=True
+        )
+
+        outer.grid(
+            row=0,
+            column=column,
+            sticky="nsew",
+            padx=(0 if column == 0 else 8, 0 if column == 3 else 8)
+        )
+
+        parent.grid_columnconfigure(column, weight=1, uniform="ptile")
+
+        tk.Label(
+            inner,
+            text=label,
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 10)
+        ).pack(
+            anchor="w",
+            padx=22,
+            pady=(18, 0)
+        )
+
+        tk.Label(
+            inner,
+            text=value,
+            bg=PANEL,
+            fg=color,
+            font=("Segoe UI", 30, "bold")
+        ).pack(
+            anchor="w",
+            padx=22
+        )
+
+        tk.Label(
+            inner,
+            text=caption,
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(
+            anchor="w",
+            padx=22,
+            pady=(0, 18)
+        )
+
     def _profile_card(self, parent, title, stats, accent=None):
         """A rounded card: a small title and a row of big numbers."""
 
@@ -6946,7 +7682,7 @@ class StudesticsApp(tk.Tk):
 
         avatar = self._avatar_canvas(
             avatar_box,
-            96,
+            108,
             (name.strip()[:1] or "?").upper(),
             PANEL
         )
@@ -6955,14 +7691,11 @@ class StudesticsApp(tk.Tk):
 
         avatar.configure(cursor="hand2")
 
-        self._avatar_hover_edit(avatar, 96)
+        self._avatar_hover_edit(avatar, 108)
 
         for w in (avatar,):
 
             w.bind("<Button-1>", lambda e: self.choose_profile_photo())
-
-        change.bind("<Enter>", lambda e: change.configure(fg=TEXT))
-        change.bind("<Leave>", lambda e: change.configure(fg=MUTED_2))
 
         who = tk.Frame(row, bg=PANEL)
 
@@ -6980,7 +7713,7 @@ class StudesticsApp(tk.Tk):
             text=name,
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 22, "bold")
+            font=("Segoe UI", 26, "bold")
         )
 
         name_label.pack(side="left")
@@ -7009,16 +7742,26 @@ class StudesticsApp(tk.Tk):
                 pady=(2, 0)
             )
 
-        tk.Label(
-            who,
-            text=f"Current streak {streak} day"
-                 + ("" if streak == 1 else "s"),
-            bg=PANEL,
-            fg=YELLOW if streak else MUTED_2,
-            font=("Segoe UI", 9)
-        ).pack(
-            anchor="w"
+        pills = tk.Frame(who, bg=PANEL)
+
+        pills.pack(
+            anchor="w",
+            pady=(10, 0)
         )
+
+        self._pill(
+            pills,
+            f"{streak} day streak" if streak != 1 else "1 day streak",
+            YELLOW if streak else MUTED_2
+        ).pack(side="left")
+
+        if focus["days"]:
+
+            self._pill(
+                pills,
+                f"{focus['days']} focus days",
+                BLUE
+            ).pack(side="left", padx=(8, 0))
 
         def start_rename(event=None):
 
@@ -7089,74 +7832,103 @@ class StudesticsApp(tk.Tk):
         ).pack(
             side="left",
             fill="y",
-            padx=26
+            padx=30
         )
 
-        big = tk.Frame(row, bg=PANEL)
+        today_stats = tk.Frame(row, bg=PANEL)
 
-        big.pack(
+        today_stats.pack(
             side="left",
             fill="x",
             expand=True
         )
 
-        for column, (label, value, color) in enumerate((
-            ("tasks created", str(total), BLUE),
-            ("tasks completed", str(completed), GREEN),
-            ("time focused", fmt_duration(focus["total"]), PURPLE_HOVER)
+        try:
+            target_seconds = max(
+                1,
+                int(self.db.get_setting("daily_target_min", "60")) * 60
+            )
+        except (TypeError, ValueError):
+            target_seconds = 3600
+
+        started = max(1, focus["sessions"])
+
+        for column, (label, value, color, fraction, caption) in enumerate((
+            (
+                "Focused today",
+                fmt_duration(stats["today"]),
+                PURPLE_HOVER,
+                stats["today"] / target_seconds,
+                f"of your {target_seconds // 60} min daily target"
+            ),
+            (
+                "Focused this week",
+                fmt_duration(stats["week"]),
+                BLUE,
+                stats["week"] / (target_seconds * 7),
+                "of your weekly target"
+            ),
+            (
+                "Sessions finished",
+                str(stats["completed_sessions"]),
+                GREEN,
+                stats["completed_sessions"] / started,
+                f"of {focus['sessions']} started"
+            )
         )):
-            self._profile_stat(big, label, value, color, column)
+            self._header_stat(
+                today_stats, label, value, color, fraction, caption,
+                column
+            )
 
-        # ---- two stat cards ----
-        cards = tk.Frame(self.page, bg=BG)
+        # ---- four headline tiles ----
+        rate = (
+            f"{round(100 * completed / total)}% of all tasks"
+            if total else "no tasks yet"
+        )
 
-        cards.pack(
+        tiles = tk.Frame(self.page, bg=BG)
+
+        tiles.pack(
             fill="x",
             pady=(0, 16)
         )
 
-        cards.grid_columnconfigure(0, weight=1, uniform="pc")
-        cards.grid_columnconfigure(1, weight=1, uniform="pc")
+        for column, (label, value, color, caption) in enumerate((
+            ("Tasks created", str(total), BLUE,
+             f"{pending} still pending"),
+            ("Tasks completed", str(completed), GREEN, rate),
+            ("Time focused", fmt_duration(focus["total"]), PURPLE_HOVER,
+             f"{focus['sessions']} sessions"),
+            ("Longest session", fmt_duration(focus["longest"]), YELLOW,
+             f"{focus['finished']} finished")
+        )):
+            self._profile_tile(
+                tiles, label, value, color, caption, column
+            )
 
-        left = self._profile_card(
-            cards,
-            "Focus",
-            (
-                ("sessions", str(focus["sessions"]), TEXT),
-                ("finished", str(focus["finished"]), GREEN),
-                ("longest", fmt_duration(focus["longest"]), PURPLE_HOVER),
-                ("alerts", str(focus["nudges"]), YELLOW)
-            ),
-            accent=PURPLE_HOVER
+        # ---- last 7 days (left) and a summary list (right) ----
+        bottom = tk.Frame(self.page, bg=BG)
+
+        bottom.pack(
+            fill="both",
+            expand=True
         )
 
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        bottom.grid_rowconfigure(0, weight=1)
 
-        right = self._profile_card(
-            cards,
-            "Tasks and goals",
-            (
-                ("pending", str(pending), YELLOW),
-                ("completed", str(completed), GREEN),
-                ("active goals", str(goals), PURPLE_HOVER),
-                ("focus days", str(focus["days"]), BLUE)
-            ),
-            accent=BLUE
-        )
+        bottom.grid_columnconfigure(0, weight=3, uniform="pb")
+        bottom.grid_columnconfigure(1, weight=2, uniform="pb")
 
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
-        # ---- last 7 days, same chart as Analytics, fills the rest ----
         week = self.db.focus_daily_seconds(7)
 
         chart_outer, chart_inner = self.rounded_panel(
-            self.page,
+            bottom,
             radius=16
         )
 
-        chart_outer.pack(
-            fill="both",
-            expand=True
+        chart_outer.grid(
+            row=0, column=0, sticky="nsew", padx=(0, 8)
         )
 
         self.section_title(
@@ -7170,7 +7942,7 @@ class StudesticsApp(tk.Tk):
         chart = tk.Canvas(
             chart_inner,
             width=10,
-            height=10,
+            height=200,
             bg=PANEL,
             highlightthickness=0,
             bd=0
@@ -7187,6 +7959,83 @@ class StudesticsApp(tk.Tk):
             "<Configure>",
             lambda event: self._draw_week_chart(chart, week)
         )
+
+        summary_outer, summary = self.rounded_panel(
+            bottom,
+            radius=16,
+            accent=PURPLE_HOVER
+        )
+
+        summary_outer.grid(
+            row=0, column=1, sticky="nsew", padx=(8, 0)
+        )
+
+        tk.Label(
+            summary,
+            text="At a glance",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 12, "bold")
+        ).pack(
+            anchor="w",
+            padx=22,
+            pady=(18, 6)
+        )
+
+        glance = (
+            ("Focus sessions", str(focus["sessions"]), TEXT),
+            ("Sessions finished", str(focus["finished"]), GREEN),
+            ("Distraction alerts", str(focus["nudges"]), YELLOW),
+            ("Tasks pending", str(pending), YELLOW),
+            ("Active goals", str(goals), PURPLE_HOVER),
+            ("Days focused", str(focus["days"]), BLUE)
+        )
+
+        for index, (label, value, color) in enumerate(glance):
+
+            line = tk.Frame(summary, bg=PANEL)
+
+            line.pack(
+                fill="both",
+                expand=True,
+                padx=22
+            )
+
+            if index:
+
+                tk.Frame(
+                    line,
+                    bg=BORDER,
+                    height=1
+                ).pack(
+                    fill="x"
+                )
+
+            inner_line = tk.Frame(line, bg=PANEL)
+
+            inner_line.pack(
+                fill="x",
+                expand=True,
+                pady=7
+            )
+
+            tk.Label(
+                inner_line,
+                text=label,
+                bg=PANEL,
+                fg=MUTED,
+                font=("Segoe UI", 10)
+            ).pack(side="left")
+
+            tk.Label(
+                inner_line,
+                text=value,
+                bg=PANEL,
+                fg=color,
+                font=("Segoe UI", 12, "bold")
+            ).pack(side="right")
+
+        tk.Frame(summary, bg=PANEL, height=14).pack()
 
     def _sidebar_due_tag(self, deadline):
         """('Overdue', colour) / ('Today', ...) / ('Fri', ...) / ('', ...)
@@ -7364,7 +8213,7 @@ class StudesticsApp(tk.Tk):
 
                 card.pack(
                     side="top",
-                    before=self.sidebar_upnext_frame,
+                    before=self._upnext_outer,
                     padx=10,
                     pady=(12, 0)
                 )
@@ -7449,7 +8298,84 @@ class StudesticsApp(tk.Tk):
         except Exception:
             pass
 
-    def refresh_sidebar_upnext(self):
+    def _sidebar_overflow(self):
+        """True when the sidebar's contents are taller than the sidebar,
+        which cuts off Settings and the profile at the bottom."""
+
+        try:
+
+            self.sidebar.update_idletasks()
+
+            # Direct test: would the lists' bottom edge run into the
+            # Settings button?
+            frame = self.sidebar_upnext_frame
+
+            if frame.winfo_ismapped() and frame.winfo_children():
+
+                bottom = frame.winfo_rooty() + frame.winfo_reqheight()
+
+                if bottom > self._settings_nav.winfo_rooty() - 6:
+                    return True
+
+            total = 0
+
+            for w in self.sidebar.pack_slaves():
+
+                # A widget squeezed below the height it asked for is
+                # being cut off.
+                if w.winfo_ismapped() and (
+                    w.winfo_height() < w.winfo_reqheight()
+                ):
+                    return True
+
+                try:
+
+                    pad = str(w.pack_info().get("pady", 0))
+
+                    pad = sum(
+                        int(float(p)) for p in pad.replace(
+                            "{", " "
+                        ).replace("}", " ").split()
+                    ) if len(pad.split()) > 1 else int(float(pad)) * 2
+
+                except Exception:
+                    pad = 0
+
+                total += w.winfo_reqheight() + pad
+
+            return total > self.sidebar.winfo_height() > 50
+
+        except Exception:
+            return False
+
+    def refresh_sidebar_upnext(self, recheck=True):
+        """Fills 'Top tasks' / 'Active goals' (the area scrolls if the
+        window is too short for all of it)."""
+
+        self._fill_sidebar_upnext(0)
+
+        def bind_tree(widget):
+
+            try:
+
+                widget.bind("<MouseWheel>", self._upnext_wheel)
+
+                for child in widget.winfo_children():
+                    bind_tree(child)
+
+            except Exception:
+                pass
+
+        try:
+
+            bind_tree(self.sidebar_upnext_frame)
+
+            self._upnext_canvas.yview_moveto(0)
+
+        except Exception:
+            pass
+
+    def _fill_sidebar_upnext(self, level=0):
 
         if not hasattr(self, "sidebar_upnext_frame"):
             return
@@ -7459,6 +8385,14 @@ class StudesticsApp(tk.Tk):
 
         for widget in self.sidebar_upnext_frame.winfo_children():
             widget.destroy()
+
+        try:
+            self._upnext_top_line.pack_forget()
+        except Exception:
+            pass
+
+        if self.db.get_setting("sidebar_lists", "1") == "0":
+            return
 
         priority_rank = {"High": 0, "Medium": 1, "Low": 2}
 
@@ -7475,22 +8409,15 @@ class StudesticsApp(tk.Tk):
             )
         )
 
-        top_tasks = tasks_sorted[:3]
+        top_tasks = tasks_sorted[:(3, 3, 2, 1, 0)[level]]
 
-        active_goals = self.db.get_goals(True)[:2]
+        active_goals = self.db.get_goals(True)[:(2, 0, 0, 0, 0)[level]]
 
         if not top_tasks and not active_goals:
             return
 
-        separator = tk.Frame(
-            self.sidebar_upnext_frame,
-            bg=mix_color(PURPLE, SIDEBAR, 0.2),
-            height=1
-        )
-
-        separator.pack(
-            fill="x",
-            pady=(0, 12)
+        self._upnext_top_line.pack(
+            side="top", fill="x", pady=(0, 12), before=self._upnext_canvas
         )
 
         if top_tasks:
@@ -7910,7 +8837,7 @@ class StudesticsApp(tk.Tk):
             if h < 2 * r + 2 or w < 2 * r + 2:
                 return
 
-            corners = _panel_corner_images(r, accent)
+            corners = _panel_corner_images(r, None)
 
             if not hasattr(outer, "_corner_photos"):
                 outer._corner_photos = {}
@@ -7944,9 +8871,6 @@ class StudesticsApp(tk.Tk):
             rect(w - 1, r, w, h - r, BORDER)
             rect(0, r, 1, h - r, BORDER)
 
-            if accent:
-                rect(1, r, 5, h - r, accent)
-
             for name, x, y in (
                 ("tl", 0, 0),
                 ("tr", w - r, 0),
@@ -7958,6 +8882,23 @@ class StudesticsApp(tk.Tk):
                     x, y,
                     anchor="nw",
                     image=photos[name],
+                    tags="bg"
+                )
+
+            # Coloured edge: full height, curving round the corners
+            # and thinning to nothing at the top and bottom.
+            if accent:
+
+                edge = ImageTk.PhotoImage(
+                    _edge_stripe_image(accent, h, r, 5)
+                )
+
+                outer._edge_photo = edge
+
+                outer.create_image(
+                    0, 0,
+                    anchor="nw",
+                    image=edge,
                     tags="bg"
                 )
 
@@ -8261,6 +9202,126 @@ class StudesticsApp(tk.Tk):
     # TASKS
     # ========================================================
 
+    def _reminder_strip(self, parent):
+        """Top right of the Tasks page: the time left until the next
+        reminder for each priority (the soonest one among your
+        pending tasks of that priority)."""
+
+        strip = tk.Frame(parent, bg=BG)
+
+        strip.pack(side="right")
+
+        tk.Label(
+            strip,
+            text="Next reminder",
+            bg=BG,
+            fg=MUTED_2,
+            font=("Segoe UI", 9)
+        ).pack(side="left", padx=(0, 10))
+
+        labels = {}
+
+        for name in ("Low", "Medium", "High"):
+
+            color = priority_color(name)
+
+            box = tk.Frame(strip, bg=BG)
+
+            box.pack(side="left", padx=(0, 14))
+
+            tk.Label(
+                box,
+                text=name,
+                bg=BG,
+                fg=color,
+                font=("Segoe UI", 10, "bold"),
+                width=7,
+                anchor="w"
+            ).pack(side="left")
+
+            value = tk.Label(
+                box,
+                text="NULL",
+                bg=BG,
+                fg=TEXT,
+                font=("Segoe UI", 10),
+                width=8,
+                anchor="w"
+            )
+
+            value.pack(side="left", padx=(6, 0))
+
+            labels[name] = value
+
+        cache = {"tasks": [], "age": 99}
+
+        def left_text(seconds):
+
+            seconds = max(0, int(seconds))
+
+            hours, rest = divmod(seconds, 3600)
+            minutes, secs = divmod(rest, 60)
+
+            if hours:
+                return f"{hours}h {minutes:02d}m"
+
+            return f"{minutes}m {secs:02d}s"
+
+        def tick():
+
+            try:
+
+                if not strip.winfo_exists():
+                    return
+
+                if cache["age"] >= 10:
+
+                    cache["tasks"] = list(self.db.get_tasks(False))
+                    cache["age"] = 0
+
+                cache["age"] += 1
+
+                now = time.time()
+
+                soonest = {}
+
+                for task in cache["tasks"]:
+
+                    try:
+
+                        if task["remind_at"]:
+                            continue
+
+                    except (KeyError, IndexError):
+                        pass
+
+                    last = self._reminder_last.get(task["id"], now)
+
+                    remaining = (
+                        last + self._effective_interval(task) - now
+                    )
+
+                    name = task["priority"]
+
+                    if name not in soonest or remaining < soonest[name]:
+                        soonest[name] = remaining
+
+                for name, label in labels.items():
+
+                    label.configure(
+                        text=(
+                            left_text(soonest[name])
+                            if name in soonest else "NULL"
+                        )
+                    )
+
+                strip.after(1000, tick)
+
+            except Exception:
+                pass
+
+        tick()
+
     def build_tasks(self):
 
         self.page_header(
@@ -8310,6 +9371,8 @@ class StudesticsApp(tk.Tk):
         ).pack(
             side="left"
         )
+
+        self._reminder_strip(toolbar)
 
         outer = tk.Frame(
             self.page,
@@ -8390,6 +9453,14 @@ class StudesticsApp(tk.Tk):
             self.tasks_show_completed
         )
 
+        # "Show completed" lists only the finished tasks.
+        if self.tasks_show_completed:
+
+            tasks = [
+                task for task in tasks
+                if task["status"] == "Completed"
+            ]
+
         max_rows = 4
         min_card_height = 130
         max_card_height = 190
@@ -8428,14 +9499,11 @@ class StudesticsApp(tk.Tk):
                     ),
                     bg=PANEL,
                     fg=MUTED_2,
-                    font=("Segoe UI", 10)
-                ).grid(
-                    row=0,
-                    column=0,
-                    columnspan=columns,
-                    sticky="w",
-                    padx=12,
-                    pady=12
+                    font=("Segoe UI", 12)
+                ).place(
+                    relx=0.5,
+                    rely=0.5,
+                    anchor="center"
                 )
 
             start = self.tasks_page * page_size
@@ -8804,6 +9872,79 @@ class StudesticsApp(tk.Tk):
                 pady=4
             )
 
+    def _paste_ghost(self, img, box, kind, hovered):
+        """Outlined pill for cards without a photo: the card shows
+        through. Main action is a solid theme pill, Edit a light outline,
+        Delete a red outline that fills red on hover."""
+
+        from PIL import ImageChops
+
+        x1, y1, x2, y2 = box
+        w, h = x2 - x1, y2 - y1
+
+        if w < 4 or h < 4:
+            return
+
+        scale = 4
+
+        def pill_mask(inset):
+
+            m = Image.new("L", (w * scale, h * scale), 0)
+
+            inset = int(inset * scale)
+
+            ImageDraw.Draw(m).rounded_rectangle(
+                [inset, inset, w * scale - 1 - inset, h * scale - 1 - inset],
+                radius=(h * scale) // 2 - inset,
+                fill=255
+            )
+
+            return m
+
+        outer = pill_mask(0)
+        inner = pill_mask(1.6)
+        ring = ImageChops.subtract(outer, inner)
+
+        outer = outer.resize((w, h), Image.LANCZOS)
+        inner = inner.resize((w, h), Image.LANCZOS)
+        ring = ring.resize((w, h), Image.LANCZOS)
+
+        region = img.crop(box).convert("RGB")
+
+        white = (255, 255, 255)
+        red = _hex_rgb(RED)
+
+        if kind == "primary":
+            fill = ACCENT_LIGHT_RGB if hovered else ACCENT_RGB
+            fill_amount = 1.0
+            rim = ACCENT_LIGHT_RGB
+            rim_amount = 1.0
+        elif kind == "danger":
+            fill = red
+            fill_amount = 1.0 if hovered else 0.0
+            rim = red
+            rim_amount = 1.0 if hovered else 0.6
+        else:
+            fill = white
+            fill_amount = 0.10 if hovered else 0.0
+            rim = white
+            rim_amount = 0.55 if hovered else 0.28
+
+        body = Image.blend(
+            region, Image.new("RGB", (w, h), fill), fill_amount
+        )
+
+        edge = Image.blend(
+            region, Image.new("RGB", (w, h), rim), rim_amount
+        )
+
+        out = region.copy()
+
+        out.paste(body, (0, 0), inner)
+        out.paste(edge, (0, 0), ring)
+
+        img.paste(out, (x1, y1))
+
     def _paste_flat(self, img, box, kind, hovered):
         """A solid pill for cards without a photo, in the app's own
         style: purple for the main action, dark grey for Edit, a
@@ -8860,11 +10001,13 @@ class StudesticsApp(tk.Tk):
         accent,
         hovered
     ):
-        """Draws a frosted-glass pill straight into `img` (in place):
-        the photo behind it is blurred and lightly tinted, with a bright
-        rim and a soft sheen along the top edge. Real Tk widgets can
-        never be transparent, so the "buttons" are painted into the card
-        image itself and hit-tested by hand."""
+        """Draws a liquid-glass pill straight into `img` (in place).
+        The middle is clear, so the photo shows through sharp. Around
+        the edge the glass bends the picture (it shows a squeezed-in
+        view of what lies further out) and a bright rim catches the
+        light, strongest at the top-left and bottom-right. Real Tk
+        widgets can never be transparent, so the "buttons" are painted
+        into the card image and hit-tested by hand."""
 
         x1, y1, x2, y2 = box
         w, h = x2 - x1, y2 - y1
@@ -8874,39 +10017,132 @@ class StudesticsApp(tk.Tk):
 
         scale = 4
 
-        region = img.crop(box).convert("RGB")
+        iw, ih = img.size
 
-        frosted = region.filter(ImageFilter.GaussianBlur(3))
-        # Dimmed enough that white labels stay readable on light photos.
-        frosted = ImageEnhance.Brightness(frosted).enhance(
-            0.75 if hovered else 0.68
-        )
+        # Real refraction. The middle is untouched, so it is clear.
+        # Close to the rim every point looks at a spot further out
+        # along the edge's normal (like a water drop bending the
+        # picture), the pull getting stronger towards the rim. A
+        # coarse mesh of tiny quads carries the warp, one pass per
+        # colour channel with slightly different strength, so the very
+        # edge splits light a little like real glass.
+        radius = h / 2.0
+        band = radius * 0.6
+        reach = h * 0.7
 
-        if hovered:
-            tint, amount = accent, 0.55
-        else:
-            tint, amount = (255, 255, 255), 0.08
+        columns = max(10, int(w / 5))
+        rows = max(6, int(h / 3))
 
-        frosted = Image.blend(
-            frosted,
-            Image.new("RGB", (w, h), tint),
-            amount
-        )
+        def source_point(gx, gy, strength):
 
-        sheen = Image.new("L", (1, h))
+            centre_x = min(max(gx, radius), w - radius)
 
-        for y in range(h):
-            sheen.putpixel(
-                (0, y),
-                int(80 * max(0.0, 1 - y / (h * 0.55)))
+            vx = gx - centre_x
+            vy = gy - radius
+
+            dist = math.hypot(vx, vy)
+
+            depth = radius - dist
+
+            if dist < 1e-6:
+                return x1 + gx, y1 + gy
+
+            t = max(0.0, min(1.0, depth / band))
+
+            pull = strength * reach * (1.0 - t) ** 2.0
+
+            sx = x1 + gx + vx / dist * pull
+            sy = y1 + gy + vy / dist * pull
+
+            return (
+                min(max(sx, 0), iw - 1),
+                min(max(sy, 0), ih - 1)
             )
 
-        sheen = sheen.resize((w, h))
+        rgb = img.convert("RGB")
 
-        frosted = Image.composite(
-            Image.new("RGB", (w, h), (255, 255, 255)),
-            frosted,
-            sheen
+        def warp(strength):
+
+            grid = [
+                [
+                    source_point(
+                        w * i / columns, h * j / rows, strength
+                    )
+                    for i in range(columns + 1)
+                ]
+                for j in range(rows + 1)
+            ]
+
+            mesh = []
+
+            for j in range(rows):
+
+                for i in range(columns):
+
+                    dest = (
+                        int(round(w * i / columns)),
+                        int(round(h * j / rows)),
+                        int(round(w * (i + 1) / columns)),
+                        int(round(h * (j + 1) / rows))
+                    )
+
+                    nw = grid[j][i]
+                    sw = grid[j + 1][i]
+                    se = grid[j + 1][i + 1]
+                    ne = grid[j][i + 1]
+
+                    mesh.append((
+                        dest,
+                        (
+                            nw[0], nw[1], sw[0], sw[1],
+                            se[0], se[1], ne[0], ne[1]
+                        )
+                    ))
+
+            return rgb.transform(
+                (w, h), Image.MESH, mesh, Image.BILINEAR
+            )
+
+        red = warp(0.92).getchannel("R")
+        green = warp(1.0).getchannel("G")
+        blue = warp(1.08).getchannel("B")
+
+        glass = Image.merge("RGB", (red, green, blue))
+
+        # A soft dark pool behind the label (not at the rim), so the
+        # white text stays readable on light pictures while the edge
+        # stays clear glass.
+        pool_big = Image.new("L", (w * scale, h * scale), 0)
+
+        ImageDraw.Draw(pool_big).ellipse(
+            [
+                int(w * scale * 0.12), int(h * scale * 0.18),
+                int(w * scale * 0.88), int(h * scale * 0.82)
+            ],
+            fill=255
+        )
+
+        pool = pool_big.filter(
+            ImageFilter.GaussianBlur(h * scale * 0.22)
+        ).resize((w, h), Image.LANCZOS)
+
+        glass = Image.composite(
+            Image.new("RGB", (w, h), (8, 8, 16)),
+            glass,
+            pool.point(lambda v: int(v * (0.5 if hovered else 0.42)))
+        )
+
+        glass = ImageEnhance.Brightness(glass).enhance(0.92)
+
+        if hovered:
+            tint, amount = accent, 0.38
+        else:
+            tint, amount = (255, 255, 255), 0.05
+
+        glass = Image.blend(
+            glass,
+            Image.new("RGB", (w, h), tint),
+            amount
         )
 
         big_mask = Image.new("L", (w * scale, h * scale), 0)
@@ -8919,26 +10155,73 @@ class StudesticsApp(tk.Tk):
 
         mask = big_mask.resize((w, h), Image.LANCZOS)
 
-        img.paste(frosted, (x1, y1), mask)
+        img.paste(glass, (x1, y1), mask)
 
+        # Rim light: thin bright edge, brightest top-left and
+        # bottom-right, with a soft glow just inside it.
         ring_big = Image.new("L", (w * scale, h * scale), 0)
 
         ImageDraw.Draw(ring_big).rounded_rectangle(
             [0, 0, w * scale - 1, h * scale - 1],
             radius=h * scale // 2,
             outline=255,
-            width=int(1.5 * scale)
+            width=int(1.6 * scale)
         )
 
         ring = ring_big.resize((w, h), Image.LANCZOS)
-        ring = ring.point(
-            lambda v: int(v * (0.9 if hovered else 0.5))
+
+        glow = ring_big.filter(
+            ImageFilter.GaussianBlur(2.2 * scale)
+        ).resize((w, h), Image.LANCZOS).point(lambda v: min(255, v * 2))
+
+        ramp = Image.linear_gradient("L")
+
+        horizontal = ramp.rotate(90).resize((w, h))
+        vertical = ramp.resize((w, h))
+
+        # 0 at the top-left corner, 255 at the bottom-right corner.
+        diagonal = ImageChops.add(horizontal, vertical, scale=2)
+
+        top_left = ImageChops.invert(diagonal)
+
+        # Light on both opposite corners, dim on the other two.
+        light = ImageChops.lighter(
+            top_left.point(lambda v: int(255 * (v / 255) ** 2)),
+            diagonal.point(lambda v: int(190 * (v / 255) ** 2))
         )
+
+        light = light.point(lambda v: 60 + int(v * 0.76))
+
+        strength = 1.0 if hovered else 0.85
+
+        rim = ImageChops.multiply(ring, light).point(
+            lambda v: int(v * strength)
+        )
+
+        inner = ImageChops.multiply(
+            glow, light
+        ).point(lambda v: int(v * 0.25))
 
         img.paste(
             Image.new("RGB", (w, h), (255, 255, 255)),
             (x1, y1),
-            ring
+            ImageChops.multiply(ImageChops.lighter(rim, inner), mask)
+        )
+
+    def _edge_stripe(self, canvas, color, height, radius, thickness=5):
+        """Draws the tapering, curved coloured edge on a card canvas."""
+
+        photo = ImageTk.PhotoImage(
+            _edge_stripe_image(color, height, radius, thickness)
+        )
+
+        if not hasattr(canvas, "_etext_photos"):
+            canvas._etext_photos = []
+
+        canvas._etext_photos.append(photo)
+
+        canvas.create_image(
+            0, 0, anchor="nw", image=photo, tags="card_text"
         )
 
     def _canvas_text(self, canvas, x, y, **kw):
@@ -9015,6 +10298,17 @@ class StudesticsApp(tk.Tk):
         )
 
         card_color = COMPLETED_BG if is_completed else PANEL_2
+
+        # Card glow / edge: the priority's colour, or the theme colour
+        # when the task has its own custom reminder interval.
+        try:
+            custom_reminder = int(task["remind_minutes"] or 0) > 0
+        except Exception:
+            custom_reminder = False
+
+        card_accent = (
+            PURPLE if custom_reminder else priority_color(task["priority"])
+        )
 
         canvas = tk.Canvas(
             parent,
@@ -9139,7 +10433,7 @@ class StudesticsApp(tk.Tk):
                 if rect[0] < 0:
                     continue
 
-                if has_photo:
+                if has_photo or self.glass_plain:
 
                     self._paste_glass(
                         img,
@@ -9150,7 +10444,7 @@ class StudesticsApp(tk.Tk):
 
                 else:
 
-                    self._paste_flat(
+                    self._paste_ghost(
                         img,
                         rect,
                         actions[i]["kind"],
@@ -9243,49 +10537,27 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
-                # Coloured edge: red = overdue, amber = due soon.
-                canvas.create_rectangle(
-                    0, 16, 4, card_height - 16,
-                    fill=due_color,
-                    outline="",
-                    tags="card_text"
+                # Coloured edge: red = overdue, amber = due soon,
+                # otherwise the card's accent colour.
+                self._edge_stripe(
+                    canvas,
+                    (
+                        due_color if due_state in ("overdue", "soon")
+                        else card_accent
+                    ),
+                    card_height,
+                    radius
                 )
 
             for i, (x1, y1, x2, y2) in enumerate(rects):
-
-                if has_photo:
-
-                    # A soft dark shadow keeps white labels legible
-                    # on light photos without dimming the glass.
-                    canvas.create_text(
-                        (x1 + x2) / 2 + 1,
-                        (y1 + y2) / 2 + 1,
-                        text=actions[i]["label"],
-                        font=label_font,
-                        fill="#000000",
-                        tags="card_text"
-                    )
 
                 canvas.create_text(
                     (x1 + x2) / 2,
                     (y1 + y2) / 2,
                     text=actions[i]["label"],
                     font=label_font,
-                    fill=(
-                        "#FFFFFF"
-                        if (has_photo or actions[i]["kind"] == "primary")
-                        else (
-                            RED
-                            if (
-                                actions[i]["kind"] == "danger"
-                                and state["hover"] != i
-                            )
-                            else (
-                                "#FFFFFF"
-                                if actions[i]["kind"] == "danger"
-                                else TEXT
-                            )
-                        )
+                    fill=label_color(
+                        i, has_photo or self.glass_plain, actions, state
                     ),
                     tags="card_text"
                 )
@@ -9374,6 +10646,32 @@ class StudesticsApp(tk.Tk):
                     composited,
                     lift
                 )
+
+                # A soft wash of the priority colour from the left, so
+                # plain cards have some colour like the picture ones.
+                if not is_completed:
+
+                    wash = Image.new("L", (width, 1))
+
+                    reach = max(1, int(width * 0.55))
+
+                    for x in range(width):
+
+                        wash.putpixel(
+                            (x, 0),
+                            int(46 * max(0.0, 1 - x / reach) ** 1.6)
+                        )
+
+                    wash = wash.resize((width, card_height))
+
+                    composited = Image.composite(
+                        Image.new(
+                            "RGB", (width, card_height),
+                            _hex_rgb(card_accent)
+                        ),
+                        composited,
+                        wash
+                    )
 
             # Drawn at 4x and scaled down, so the corners are smooth.
             mask_big = Image.new("L", (width * 4, card_height * 4), 0)
@@ -9657,7 +10955,8 @@ class StudesticsApp(tk.Tk):
         priority_row, priority_state = self.build_priority_picker(
             form,
             initial=task["priority"] if editing else "Medium",
-            button_width=8
+            button_width=8,
+            on_select=lambda name: priority_picked()
         )
 
         priority_row.pack(
@@ -9808,6 +11107,13 @@ class StudesticsApp(tk.Tk):
             else:
 
                 animate_reveal(1)
+
+        def priority_picked():
+            """Choosing Low/Medium/High replaces the custom interval."""
+
+            if custom_state["on"]:
+
+                toggle_custom()
 
         def toggle_once(value):
             """One-time reminder: just a switch. The task's deadline
@@ -10325,6 +11631,8 @@ class StudesticsApp(tk.Tk):
             fg=MUTED
         ).pack(anchor="center", pady=(16, 6))
 
+        pending_commits = []
+
         def clock_box(parent, limit, down, up, commit):
 
             box = tk.Frame(parent, bg=BG)
@@ -10352,6 +11660,8 @@ class StudesticsApp(tk.Tk):
 
                 redraw(True)
 
+            pending_commits.append(finish)
+
             def arrow(step):
 
                 (up if step > 0 else down)()
@@ -10361,7 +11671,32 @@ class StudesticsApp(tk.Tk):
                 return "break"
 
             entry.bind("<FocusOut>", finish)
-            entry.bind("<Return>", finish)
+            def enter_key(*_):
+                """First Enter tidies the typed time (6 -> 06); once it
+                already reads tidy, Enter presses the dialog's main
+                button (Create task / Save changes)."""
+
+                before = entry.get()
+
+                finish()
+
+                if entry.get() == before:
+
+                    press = getattr(
+                        entry.winfo_toplevel(), "_popup_press", None
+                    )
+
+                    if press:
+
+                        try:
+                            press()
+                        except Exception:
+                            pass
+
+                return "break"
+
+            entry.bind("<Return>", enter_key)
+            entry.bind("<KP_Enter>", enter_key)
             entry.bind("<Up>", lambda e: arrow(1))
             entry.bind("<Down>", lambda e: arrow(-1))
             entry.bind(
@@ -10433,7 +11768,20 @@ class StudesticsApp(tk.Tk):
 
         redraw()
 
-        return {"frame": frame, "get": state.value}
+        def get_value():
+            """Typed hours/minutes count even if Enter was never
+            pressed: commit them before reading the time."""
+
+            for commit_typed in pending_commits:
+
+                try:
+                    commit_typed()
+                except Exception:
+                    pass
+
+            return state.value()
+
+        return {"frame": frame, "get": get_value}
 
     def select_attachment(
         self,
@@ -11008,7 +12356,7 @@ class StudesticsApp(tk.Tk):
                 if rect[0] < 0:
                     continue
 
-                if has_photo:
+                if has_photo or self.glass_plain:
 
                     self._paste_glass(
                         img,
@@ -11019,7 +12367,7 @@ class StudesticsApp(tk.Tk):
 
                 else:
 
-                    self._paste_flat(
+                    self._paste_ghost(
                         img,
                         rect,
                         actions[i]["kind"],
@@ -11080,41 +12428,23 @@ class StudesticsApp(tk.Tk):
                 tags="card_text"
             )
 
+            # Coloured edge, like task cards: purple = active.
+            self._edge_stripe(
+                canvas,
+                PURPLE if active else MUTED_2,
+                card_height,
+                radius
+            )
+
             for i, (x1, y1, x2, y2) in enumerate(rects):
-
-                if has_photo:
-
-                    # A soft dark shadow keeps white labels legible
-                    # on light photos without dimming the glass.
-                    canvas.create_text(
-                        (x1 + x2) / 2 + 1,
-                        (y1 + y2) / 2 + 1,
-                        text=actions[i]["label"],
-                        font=label_font,
-                        fill="#000000",
-                        tags="card_text"
-                    )
 
                 canvas.create_text(
                     (x1 + x2) / 2,
                     (y1 + y2) / 2,
                     text=actions[i]["label"],
                     font=label_font,
-                    fill=(
-                        "#FFFFFF"
-                        if (has_photo or actions[i]["kind"] == "primary")
-                        else (
-                            RED
-                            if (
-                                actions[i]["kind"] == "danger"
-                                and state["hover"] != i
-                            )
-                            else (
-                                "#FFFFFF"
-                                if actions[i]["kind"] == "danger"
-                                else TEXT
-                            )
-                        )
+                    fill=label_color(
+                        i, has_photo or self.glass_plain, actions, state
                     ),
                     tags="card_text"
                 )
@@ -11198,6 +12528,29 @@ class StudesticsApp(tk.Tk):
                     Image.new("RGB", (width, card_height), (255, 255, 255)),
                     composited,
                     lift
+                )
+
+                # A soft wash of colour from the left, like task cards.
+                wash = Image.new("L", (width, 1))
+
+                reach = max(1, int(width * 0.55))
+
+                for x in range(width):
+
+                    wash.putpixel(
+                        (x, 0),
+                        int(46 * max(0.0, 1 - x / reach) ** 1.6)
+                    )
+
+                wash = wash.resize((width, card_height))
+
+                composited = Image.composite(
+                    Image.new(
+                        "RGB", (width, card_height),
+                        _hex_rgb(PURPLE if active else MUTED_2)
+                    ),
+                    composited,
+                    wash
                 )
 
             # Drawn at 4x and scaled down, so the corners are smooth.
@@ -14962,10 +16315,10 @@ class StudesticsApp(tk.Tk):
         """Length in seconds of the current phase."""
 
         if self.focus_phase == "short":
-            return POMO_SHORT
+            return self.pomo_short
 
         if self.focus_phase == "long":
-            return POMO_LONG
+            return self.pomo_long
 
         return self.focus_duration
 
@@ -15644,10 +16997,9 @@ class StudesticsApp(tk.Tk):
         option(
             "Pomodoro mode",
             f"Study in rounds. Each round lasts as long as the timer "
-            f"you picked, then you get a {POMO_SHORT // 60}-minute "
-            f"break. After {POMO_ROUNDS} rounds you get a longer "
-            f"{POMO_LONG // 60}-minute break. The dots inside the "
-            f"circle show which round you are on.",
+            f"you picked, then you get a short break. After "
+            f"{POMO_ROUNDS} rounds you get a longer one. The dots "
+            f"inside the circle show which round you are on.",
             pomodoro_control
         )
 
@@ -16512,6 +17864,25 @@ class StudesticsApp(tk.Tk):
         except Exception:
             pass
 
+    def _keep_awake(self, on):
+        """While the full-screen timer is up, stop Windows from turning
+        the screen off or going to sleep."""
+
+        if sys.platform != "win32":
+            return
+
+        try:
+
+            import ctypes
+
+            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+            flags = 0x80000000 | (0x1 | 0x2 if on else 0)
+
+            ctypes.windll.kernel32.SetThreadExecutionState(flags)
+
+        except Exception:
+            pass
+
     def toggle_fullscreen(self, event=None):
         """Distraction-free view: a full-screen cover with only the
         timer in the middle."""
@@ -16573,6 +17944,8 @@ class StudesticsApp(tk.Tk):
         x, y, sw, sh = self._monitor_rect()
 
         win = tk.Toplevel(self)
+
+        self._keep_awake(True)
 
         win.withdraw()
 
@@ -16863,6 +18236,8 @@ class StudesticsApp(tk.Tk):
 
         self._fullscreen = False
         self._zen = None
+
+        self._keep_awake(False)
 
         if zen:
 
@@ -17212,6 +18587,31 @@ class StudesticsApp(tk.Tk):
 
         self.update_focus_ui()
 
+    def _change_pomo_break(self, kind, delta):
+        """The break length: 5 to 30 minutes in 5-minute steps, so a
+        break can't turn into a long pause. Returns False when the
+        timer is running."""
+
+        if self.focus_running:
+            return False
+
+        minutes = max(5, min(30, self.pomo_long // 60 + delta * 5))
+
+        self.pomo_long = minutes * 60
+
+        self.db.set_setting("pomo_long_min", str(minutes))
+
+        # A break that is waiting to start picks up the new length.
+        if self.pomo_enabled and self.focus_phase == "long":
+
+            self.focus_seconds = self._phase_total()
+
+            self._ring_key = None
+
+            self.update_focus_ui()
+
+        return True
+
     def focus_draw_dots(self):
         """Round dots inside the ring: one per focus round in a set.
         Filled = done, outlined = the round you are on."""
@@ -17353,12 +18753,12 @@ class StudesticsApp(tk.Tk):
             if next_phase == "long":
                 summary = (
                     f"{POMO_ROUNDS} rounds finished. "
-                    f"Take a {POMO_LONG // 60}-minute break."
+                    f"Take a {self.pomo_long // 60}-minute break."
                 )
             else:
                 summary = (
                     f"{self._focus_len_text()} focused. "
-                    f"Take a {POMO_SHORT // 60}-minute break."
+                    f"Take a {self.pomo_short // 60}-minute break."
                 )
 
             if task is not None:
@@ -17511,15 +18911,33 @@ class StudesticsApp(tk.Tk):
 
         # Never nudge about Studestics itself.
         if not title or APP_NAME.lower() in title:
+            self._nudge_pending = None
+            return
+
+        if any(ok in title for ok in NUDGE_ALLOWED):
+            self._nudge_pending = None
             return
 
         for word in self.nudge_words:
 
             if word and word in title:
 
+                # A page's title often flashes "YouTube" for a moment
+                # while it loads (even YouTube Music). Only nudge if it's
+                # still there on the next check.
+                if getattr(self, "_nudge_pending", None) != word:
+
+                    self._nudge_pending = word
+
+                    return
+
+                self._nudge_pending = None
+
                 self._nudge_fire(word, now)
 
                 return
+
+        self._nudge_pending = None
 
     def _nudge_fire(self, word, now):
 
@@ -17806,6 +19224,9 @@ class StudesticsApp(tk.Tk):
         def still_distracting():
 
             title = window_title(hwnd).lower()
+
+            if any(ok in title for ok in NUDGE_ALLOWED):
+                return False
 
             return any(
                 w and w in title for w in self.nudge_words
@@ -24252,6 +25673,130 @@ class StudesticsApp(tk.Tk):
             anchor="e"
         )
 
+    def _chart_hover(self, event):
+        """Hovering the month graph shows what you did that day: a guide
+        line, a dot on the point and a small read-out box."""
+
+        canvas = event.widget
+
+        info = getattr(canvas, "_line", None)
+
+        canvas.delete("hover")
+
+        if not info or not info["pts"]:
+            return
+
+        try:
+
+            pts = info["pts"]
+
+            index = min(
+                range(len(pts)), key=lambda i: abs(pts[i][0] - event.x)
+            )
+
+            px, py = pts[index]
+
+            day, secs = info["data"][index]
+
+            cache = info["cache"]
+
+            if day not in cache:
+                cache[day] = self.db.focus_day_details(day)
+
+            sessions = cache[day]
+
+            try:
+                heading = datetime.strptime(day, "%Y-%m-%d").strftime(
+                    "%a %d %b %Y"
+                )
+            except Exception:
+                heading = day
+
+            lines = [heading, ""]
+
+            if not sessions:
+
+                lines.append("No focus sessions")
+
+            else:
+
+                done = sum(1 for s in sessions if s["completed"])
+
+                titles = []
+
+                for s in sessions:
+
+                    name = (s["task_title"] or "").strip()
+
+                    if name and name not in titles:
+                        titles.append(name)
+
+                lines.append(f"focused: {fmt_duration(secs)}")
+
+                lines.append(
+                    f"sessions: {len(sessions)} ({done} finished)"
+                )
+
+                if titles:
+
+                    shown = ", ".join(
+                        (n if len(n) <= 22 else n[:21] + "\u2026")
+                        for n in titles[:3]
+                    )
+
+                    if len(titles) > 3:
+                        shown += f" +{len(titles) - 3}"
+
+                    lines.append(f"tasks: {shown}")
+
+                alerts = sum(s["nudges"] for s in sessions)
+
+                if alerts:
+                    lines.append(f"distraction alerts: {alerts}")
+
+            canvas.create_line(
+                px, info["top"] - 6, px, info["base"],
+                fill=MUTED_2, dash=(3, 3), tags="hover"
+            )
+
+            canvas.create_oval(
+                px - 6, py - 6, px + 6, py + 6,
+                fill=PURPLE_HOVER, outline=TEXT, width=2, tags="hover"
+            )
+
+            font = ("Consolas", 9)
+
+            probe = canvas.create_text(
+                0, 0, text="\n".join(lines), font=font, anchor="nw"
+            )
+
+            box = canvas.bbox(probe)
+
+            canvas.delete(probe)
+
+            w = box[2] - box[0] + 20
+            h = box[3] - box[1] + 16
+
+            x = px + 14
+
+            if x + w > canvas.winfo_width() - 4:
+                x = px - 14 - w
+
+            y = max(4, min(py - h / 2, canvas.winfo_height() - h - 4))
+
+            canvas.create_rectangle(
+                x, y, x + w, y + h,
+                fill="#0B0B12", outline=BORDER, tags="hover"
+            )
+
+            canvas.create_text(
+                x + 10, y + 8, text="\n".join(lines), font=font,
+                fill="#F2F2F8", anchor="nw", tags="hover"
+            )
+
+        except Exception:
+            pass
+
     def _draw_line_chart(self, canvas, data):
         """Smooth line graph with a soft fill, for the month view."""
 
@@ -24292,6 +25837,22 @@ class StudesticsApp(tk.Tk):
                 )
                 for i, (_d, secs) in enumerate(data)
             ]
+
+            # For the hover read-out.
+            canvas._line = {
+                "pts": pts, "data": list(data), "base": base_y,
+                "top": top_pad, "cache": {}
+            }
+
+            if not getattr(canvas, "_hover_bound", False):
+
+                canvas._hover_bound = True
+
+                canvas.bind("<Motion>", self._chart_hover, add="+")
+
+                canvas.bind(
+                    "<Leave>", lambda e: e.widget.delete("hover"), add="+"
+                )
 
             for frac in (0, 0.5, 1.0):
                 gy = base_y - plot_h * frac
@@ -24449,6 +26010,8 @@ class StudesticsApp(tk.Tk):
 
         if len(data) > 10:
             return self._draw_line_chart(canvas, data)
+
+        canvas._line = None
 
         try:
 
@@ -25783,6 +27346,14 @@ class StudesticsApp(tk.Tk):
 
         timer_bg_panel = self._build_timer_bg_card()
 
+        sidebar_panel = self._build_sidebar_lists_card()
+
+        pomo_panel = self._build_pomo_card()
+
+        anim_panel = self._build_startup_anim_card()
+
+        glass_panel = self._build_glass_plain_card()
+
         sound_panel = self._build_sound_card()
 
         update_panel = self._build_update_card()
@@ -25797,6 +27368,9 @@ class StudesticsApp(tk.Tk):
             ), None),
             (appearance_panel, (0, 15)),
             (timer_bg_panel, (0, 15)),
+            (sidebar_panel, (0, 15)),
+            (anim_panel, (0, 15)),
+            (glass_panel, (0, 15)),
             (self._settings_heading(
                 "General",
                 "The AI connection and reminders."
@@ -25816,6 +27390,7 @@ class StudesticsApp(tk.Tk):
                 "Timer length, distraction alerts and the clock."
             ), None),
             (focus_panel_outer, (0, 15)),
+            (pomo_panel, (0, 15)),
             (float_panel_outer, (0, 15)),
             (self._settings_heading(
                 "Data",
@@ -25833,7 +27408,8 @@ class StudesticsApp(tk.Tk):
             panel_outer, rem_panel_outer, focus_panel_outer,
             float_panel_outer, data_panel, dev_panel, startup_panel,
             appearance_panel, sound_panel, update_panel,
-            background_panel
+            background_panel, sidebar_panel, pomo_panel, anim_panel,
+            glass_panel
         ):
 
             if widget is None:
@@ -27337,6 +28913,285 @@ class StudesticsApp(tk.Tk):
 
         return outer
 
+    def _build_sidebar_lists_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=18)
+
+        left = tk.Frame(row, bg=PANEL)
+
+        left.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            left,
+            text="Tasks and goals in the sidebar",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            left,
+            text="Show your top tasks and active goals under the menu. "
+                 "Turn off for a cleaner sidebar.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9),
+            wraplength=560,
+            justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        enabled = self.db.get_setting("sidebar_lists", "1") != "0"
+
+        self.settings_sidebar_button = self.make_button(
+            row,
+            "On" if enabled else "Off",
+            self.toggle_sidebar_lists,
+            width=8
+        )
+
+        self.settings_sidebar_button.configure(selected=enabled)
+
+        self.settings_sidebar_button.pack(side="right")
+
+        return outer
+
+    def _build_pomo_card(self):
+        """Settings card: how long the Pomodoro break is. Laid out
+        like the Focus defaults card above it."""
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        self.section_title(
+            card,
+            "Break limit",
+            f"The long break after {POMO_ROUNDS} Pomodoro rounds. "
+            "You can set it from 5 to 30 minutes."
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=(0, 6))
+
+        tk.Label(
+            row,
+            text="Break",
+            bg=PANEL,
+            fg=MUTED
+        ).pack(side="left")
+
+        value = tk.Label(
+            row,
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold"),
+            width=7
+        )
+
+        note = tk.Label(
+            card,
+            text="",
+            bg=PANEL,
+            fg=YELLOW,
+            font=("Segoe UI", 9)
+        )
+
+        def refresh():
+            value.configure(text=f"{self.pomo_long // 60} min")
+
+        def step(delta):
+
+            if self._change_pomo_break("long", delta):
+                note.configure(text="")
+            else:
+                note.configure(
+                    text="Pause or reset the timer first, then "
+                         "change the break."
+                )
+
+            refresh()
+
+        self.make_button(
+            row, "\u2212", lambda: step(-1), width=2
+        ).pack(side="left", padx=(12, 0))
+
+        value.pack(side="left", padx=6)
+
+        self.make_button(
+            row, "+", lambda: step(1), width=2
+        ).pack(side="left")
+
+        refresh()
+
+        note.pack(anchor="w", padx=25, pady=(0, 12))
+
+        return outer
+
+    def _build_startup_anim_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=18)
+
+        left = tk.Frame(row, bg=PANEL)
+
+        left.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            left,
+            text="Start-up animation",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            left,
+            text="The logo animation when the app opens. Turn off to "
+                 "open straight to your Dashboard.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9),
+            wraplength=560,
+            justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        enabled = self.db.get_setting("startup_animation", "1") != "0"
+
+        self.settings_anim_button = self.make_button(
+            row,
+            "On" if enabled else "Off",
+            self.toggle_startup_anim,
+            width=8
+        )
+
+        self.settings_anim_button.configure(selected=enabled)
+
+        self.settings_anim_button.pack(side="right")
+
+        return outer
+
+    def _build_glass_plain_card(self):
+
+        outer, card = self.rounded_panel(
+            self.page,
+            radius=16,
+            fit=True
+        )
+
+        row = tk.Frame(card, bg=PANEL)
+
+        row.pack(fill="x", padx=25, pady=18)
+
+        left = tk.Frame(row, bg=PANEL)
+
+        left.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            left,
+            text="Glass buttons on every card (experimental)",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            left,
+            text="Cards with a picture always use glass buttons. Turn "
+                 "this on to use them on tasks and goals without a "
+                 "picture too.",
+            bg=PANEL,
+            fg=MUTED_2,
+            font=("Segoe UI", 9),
+            wraplength=560,
+            justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.settings_glass_button = self.make_button(
+            row,
+            "On" if self.glass_plain else "Off",
+            self.toggle_glass_plain,
+            width=8
+        )
+
+        self.settings_glass_button.configure(selected=self.glass_plain)
+
+        self.settings_glass_button.pack(side="right")
+
+        return outer
+
+    def toggle_glass_plain(self):
+
+        self.glass_plain = not self.glass_plain
+
+        try:
+            self.db.set_setting(
+                "glass_plain", "1" if self.glass_plain else "0"
+            )
+        except Exception:
+            pass
+
+        try:
+            self.settings_glass_button.configure(
+                text="On" if self.glass_plain else "Off",
+                selected=self.glass_plain
+            )
+        except Exception:
+            pass
+
+    def toggle_startup_anim(self):
+
+        target = self.db.get_setting("startup_animation", "1") == "0"
+
+        try:
+            self.db.set_setting("startup_animation", "1" if target else "0")
+        except Exception:
+            pass
+
+        try:
+            self.settings_anim_button.configure(
+                text="On" if target else "Off",
+                selected=target
+            )
+        except Exception:
+            pass
+
+    def toggle_sidebar_lists(self):
+
+        target = self.db.get_setting("sidebar_lists", "1") == "0"
+
+        try:
+            self.db.set_setting("sidebar_lists", "1" if target else "0")
+        except Exception:
+            pass
+
+        try:
+            self.settings_sidebar_button.configure(
+                text="On" if target else "Off",
+                selected=target
+            )
+        except Exception:
+            pass
+
+        self.refresh_sidebar_upnext()
+
     def toggle_background(self):
 
         target = not self._run_in_background()
@@ -28788,6 +30643,36 @@ class StudesticsApp(tk.Tk):
         win.geometry(geo)
         win.after(40, lambda: win.winfo_exists() and win.geometry(geo))
 
+        # If a dialog (like New block) is open it holds the mouse and
+        # keyboard, so the alert couldn't be clicked. Take over while the
+        # alert is up and hand control back to the dialog afterwards.
+        try:
+
+            previous = self.grab_current()
+
+            if previous is not None and previous is not win:
+
+                win.grab_set()
+
+                def give_back(event, prev=previous):
+
+                    if event.widget is not win:
+                        return
+
+                    try:
+
+                        if prev.winfo_exists():
+                            prev.grab_set()
+                            prev.focus_set()
+
+                    except Exception:
+                        pass
+
+                win.bind("<Destroy>", give_back, add="+")
+
+        except Exception:
+            pass
+
 
     def _alert_row(
         self, parent, accent, title, meta="", meta_color=None, action=None
@@ -28872,9 +30757,36 @@ class StudesticsApp(tk.Tk):
 
         if mute is not None:
 
-            self.make_button(line, "Mute", mute, width=6).pack(
-                side="left", padx=(10, 0)
+            muted = {"on": False}
+
+            holder = {}
+
+            def toggle_mute():
+
+                if muted["on"]:
+
+                    muted["on"] = False
+
+                    self.play_alarm(True)
+
+                else:
+
+                    muted["on"] = True
+
+                    mute()
+
+                try:
+                    holder["button"].configure(
+                        text="Unmute" if muted["on"] else "Mute"
+                    )
+                except Exception:
+                    pass
+
+            holder["button"] = self.make_button(
+                line, "Mute", toggle_mute, width=7
             )
+
+            holder["button"].pack(side="left", padx=(10, 0))
 
         return line
 
