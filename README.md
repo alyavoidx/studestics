@@ -14,7 +14,7 @@ Tasks, goals, notes, a schedule, a focus timer and an AI study buddy, in one sma
 ![stars](https://img.shields.io/github/stars/alyavoidx/studestics?style=flat-square&color=e0af68)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2B-0a84ff?style=flat-square)
 ![made with](https://img.shields.io/badge/made%20with-Python%20%2B%20Tkinter-3776ab?style=flat-square)
-![license](https://img.shields.io/github/license/alyavoidx/studestics?style=flat-square&color=9ece6a)
+![license](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)
 
 <br>
 
