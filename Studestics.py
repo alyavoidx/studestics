@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.6"
+VERSION = "1.6.7"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -4664,6 +4664,66 @@ def _edge_stripe_image(color, height, radius, thickness=5):
     return stripe
 
 
+_EDGE_GLOWS = {}
+
+
+def _edge_glow_mask(width, height, radius, peak=78):
+    """Soft light that spreads out from the coloured edge on the
+    left of a card. It is the edge's own shape blurred, so it is
+    brightest beside the straight part of the line and dies away
+    smoothly towards the corners, the way the line itself does."""
+
+    key = (width, height, radius, peak)
+
+    if key in _EDGE_GLOWS:
+        return _EDGE_GLOWS[key]
+
+    reach = max(40, int(min(width * 0.8, 620)))
+
+    # Work on a small copy and scale up: the blur is very soft, so
+    # nothing is lost and it stays quick.
+    k = 4
+    w = max(8, reach // k + 8)
+    h = max(8, height // 2)
+
+    base = Image.new("L", (w, h), 0)
+
+    pad = max(2, int(radius * 0.9) // 2)
+
+    ImageDraw.Draw(base).rectangle(
+        [0, pad, 1, h - 1 - pad], fill=255
+    )
+
+    near = base.filter(ImageFilter.GaussianBlur(max(2, h * 0.12)))
+    far = base.filter(ImageFilter.GaussianBlur(max(4, w * 0.5)))
+
+    def norm(img, top):
+        m = max(1, img.getextrema()[1])
+        return img.point(lambda v: int(v * top / m))
+
+    glow = ImageChops.add(norm(near, peak * 0.55), norm(far, peak * 0.45))
+
+    glow = glow.resize((reach, height), Image.BICUBIC)
+
+    # A touch of noise so the slow fade has no visible steps.
+    try:
+        noise = Image.effect_noise((reach, height), 2.0)
+        glow = ImageChops.add(glow, noise, 1.0, -128)
+    except Exception:
+        pass
+
+    full = Image.new("L", (width, height), 0)
+
+    full.paste(glow, (0, 0))
+
+    if len(_EDGE_GLOWS) > 60:
+        _EDGE_GLOWS.clear()
+
+    _EDGE_GLOWS[key] = full
+
+    return full
+
+
 def _panel_corner_images(radius, accent=None, fill=None, outside=None,
                          border=None):
     """The four anti-aliased rounded corners (radius x radius each)
@@ -8193,6 +8253,25 @@ class StudesticsApp(tk.Tk):
             fill="x"
         )
 
+        # Centre the marker on the title's line, whatever the font
+        # size or display scaling is.
+        try:
+
+            marker_h = (
+                dot.marker_photo.height()
+                if HAS_PIL else dot.winfo_reqheight()
+            )
+
+            dot.pack_configure(
+                pady=(
+                    3 + max(0, (name.winfo_reqheight() - marker_h) // 2) + 1,
+                    0
+                )
+            )
+
+        except Exception:
+            pass
+
         parts = [row, dot, text_box, name]
 
         if tag:
@@ -8212,22 +8291,101 @@ class StudesticsApp(tk.Tk):
 
             parts.append(note)
 
+        # The hover highlight is a rounded shape drawn behind the
+        # row's contents (a picture), not a square fill.
+        back = tk.Label(row, bd=0, bg=SIDEBAR)
+
+        back.place(x=0, y=0, relwidth=1, relheight=1)
+
+        back.lower()
+
+        shape = {"size": None, "photo": None}
+
         def paint(color):
 
+            hovered = color != SIDEBAR
+
             for part in parts:
+
+                if part is row and HAS_PIL:
+                    continue
 
                 try:
                     part.configure(bg=color)
                 except Exception:
                     pass
 
+            if not HAS_PIL:
+                return
+
+            try:
+
+                if not hovered:
+                    back.configure(image="")
+                    return
+
+                w, h = row.winfo_width(), row.winfo_height()
+
+                if w < 8 or h < 8:
+                    return
+
+                if shape["size"] != (w, h):
+
+                    k = 4
+
+                    big = Image.new(
+                        "RGB", (w * k, h * k), SIDEBAR
+                    )
+
+                    ImageDraw.Draw(big).rounded_rectangle(
+                        [0, 0, w * k - 1, h * k - 1],
+                        radius=9 * k,
+                        fill=SIDEBAR_HOVER
+                    )
+
+                    shape["photo"] = ImageTk.PhotoImage(
+                        big.resize((w, h), Image.LANCZOS)
+                    )
+
+                    shape["size"] = (w, h)
+
+                back.configure(image=shape["photo"])
+
+            except Exception:
+                pass
+
+        def inside():
+
+            try:
+
+                x = row.winfo_pointerx() - row.winfo_rootx()
+                y = row.winfo_pointery() - row.winfo_rooty()
+
+                return (
+                    0 <= x < row.winfo_width()
+                    and 0 <= y < row.winfo_height()
+                )
+
+            except Exception:
+                return False
+
+        def leave_check():
+
+            if not inside():
+                paint(SIDEBAR)
+
         if command:
 
-            for part in parts:
+            for part in parts + [back]:
 
                 part.bind("<Enter>", lambda e: paint(SIDEBAR_HOVER))
-                part.bind("<Leave>", lambda e: paint(SIDEBAR))
+                part.bind(
+                    "<Leave>",
+                    lambda e: row.after(15, leave_check)
+                )
                 part.bind("<Button-1>", lambda e: command())
+
+            back.configure(cursor="hand2")
 
     def _sidebar_timer_update(self):
         """Show, redraw or hide the little timer card in the sidebar."""
@@ -9303,7 +9461,7 @@ class StudesticsApp(tk.Tk):
                 bg=BG,
                 fg=color,
                 font=("Segoe UI", 10, "bold"),
-                width=6,
+                width=8,
                 anchor="w"
             ).pack(side="left")
 
@@ -10687,15 +10845,11 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
-            # Coloured edge: green = completed, red = overdue,
-            # amber = due soon, otherwise the card's accent colour.
+            # Coloured edge: green = completed, otherwise the card's
+            # accent (the priority colour) - the same colour as the glow.
             self._edge_stripe(
                 canvas,
-                (
-                    GREEN if is_completed
-                    else due_color if due_state in ("overdue", "soon")
-                    else card_accent
-                ),
+                GREEN if is_completed else card_accent,
                 card_height,
                 radius
             )
@@ -10802,18 +10956,7 @@ class StudesticsApp(tk.Tk):
                 # plain cards have some colour like the picture ones.
                 if True:
 
-                    wash = Image.new("L", (width, 1))
-
-                    reach = max(1, int(width * 0.55))
-
-                    for x in range(width):
-
-                        wash.putpixel(
-                            (x, 0),
-                            int(46 * max(0.0, 1 - x / reach) ** 1.6)
-                        )
-
-                    wash = wash.resize((width, card_height))
+                    wash = _edge_glow_mask(width, card_height, radius)
 
                     composited = Image.composite(
                         Image.new(
@@ -15492,9 +15635,32 @@ class StudesticsApp(tk.Tk):
             bg=PANEL
         )
 
-        content.pack(
-            pady=(22, 0)
-        )
+        def place_content(event=None):
+            """Keep the clock block in the middle of the panel (like
+            the stopwatch), but never up under the Timer / Stopwatch
+            buttons."""
+
+            try:
+
+                if getattr(self, "focus_view", "timer") != "timer":
+                    return
+
+                panel_h = panel.winfo_height()
+                content_h = content.winfo_reqheight()
+
+                top = tabs.winfo_y() + tabs.winfo_height() + 22
+
+                y = max(top, (panel_h - content_h) // 2)
+
+                content.place(relx=0.5, y=y, anchor="n")
+
+            except Exception:
+                pass
+
+        content.place(relx=0.5, y=80, anchor="n")
+
+        panel.bind("<Configure>", place_content, add="+")
+        content.bind("<Configure>", place_content, add="+")
 
         stopwatch_view = self._build_stopwatch(panel)
 
@@ -15509,7 +15675,7 @@ class StudesticsApp(tk.Tk):
 
             if mode == "stopwatch":
 
-                content.pack_forget()
+                content.place_forget()
 
                 stopwatch_view.place(
                     relx=0.5, rely=0.5, anchor="center"
@@ -15521,7 +15687,7 @@ class StudesticsApp(tk.Tk):
 
                 stopwatch_view.place_forget()
 
-                content.pack(pady=(22, 0), after=tabs)
+                place_content()
 
         for name, label in (("timer", "Timer"), ("stopwatch", "Stopwatch")):
 
@@ -15999,7 +16165,7 @@ class StudesticsApp(tk.Tk):
 
         def draw_ring(fraction, running):
 
-            key = (int(fraction * 240), running)
+            key = (int(fraction * 360), running)
 
             if key == ring_state["key"]:
                 return
@@ -16009,7 +16175,9 @@ class StudesticsApp(tk.Tk):
             if not HAS_PIL:
                 return
 
-            scale = 3
+            # Drawn at 2x and shrunk with a cheap filter: this runs
+            # many times a second, so it has to be quick.
+            scale = 2
             box = size * scale
 
             img = Image.new("RGB", (box, box), PANEL)
@@ -16036,32 +16204,185 @@ class StudesticsApp(tk.Tk):
                 )
 
             ring_state["photo"] = ImageTk.PhotoImage(
-                img.resize((size, size), Image.LANCZOS)
+                img.resize((size, size), Image.BOX)
             )
 
             canvas.itemconfigure(ring_item, image=ring_state["photo"])
 
-        lap_label = tk.Label(
-            frame,
-            text="",
-            bg=PANEL,
-            fg=MUTED,
-            font=("Segoe UI", 10),
-            justify="center"
+        # ---- the lap list: newest first, scrolls so the first lap
+        # can still be reached ----
+        ROW_H = 28
+        LIST_W = 300
+        MAX_ROWS = 4
+
+        laps_box = tk.Frame(frame, bg=PANEL)
+
+        header = tk.Frame(laps_box, bg=PANEL, width=LIST_W, height=22)
+
+        header.pack(fill="x")
+
+        header.pack_propagate(False)
+
+        for text, x, anchor in (
+            ("LAP", 14, "w"), ("LAP TIME", 150, "center"),
+            ("TOTAL", LIST_W - 22, "e")
+        ):
+
+            tk.Label(
+                header, text=text, bg=PANEL, fg=MUTED_2,
+                font=("Segoe UI", 8, "bold")
+            ).place(x=x, rely=0.5, anchor=anchor)
+
+        tk.Frame(laps_box, bg=BORDER, height=1).pack(fill="x")
+
+        list_canvas = tk.Canvas(
+            laps_box, width=LIST_W, height=ROW_H,
+            bg=PANEL, highlightthickness=0, bd=0
         )
+
+        list_canvas.pack()
+
+        list_inner = tk.Frame(list_canvas, bg=PANEL)
+
+        list_canvas.create_window(
+            0, 0, window=list_inner, anchor="nw", width=LIST_W,
+            tags="inner"
+        )
+
+        thumb = list_canvas.create_rectangle(
+            0, 0, 0, 0, fill=_theme_mix(PANEL, TEXT, 0.25),
+            outline="", state="hidden"
+        )
+
+        def lap_scroll(event=None, delta=0):
+
+            list_canvas.update_idletasks()
+
+            total_h = list_inner.winfo_reqheight()
+            view_h = list_canvas.winfo_height()
+
+            if total_h <= view_h:
+                return
+
+            top = list_canvas.canvasy(0)
+
+            top = max(0, min(total_h - view_h, top - delta))
+
+            list_canvas.yview_moveto(top / total_h)
+
+            draw_thumb()
+
+        def draw_thumb(*_):
+
+            total_h = max(1, list_inner.winfo_reqheight())
+            view_h = list_canvas.winfo_height()
+
+            if total_h <= view_h + 1:
+                list_canvas.itemconfigure(thumb, state="hidden")
+                return
+
+            top = list_canvas.canvasy(0)
+
+            t0 = top / total_h * view_h
+            t1 = (top + view_h) / total_h * view_h
+
+            list_canvas.coords(
+                thumb, LIST_W - 4, top + t0, LIST_W - 1, top + t1
+            )
+
+            list_canvas.itemconfigure(thumb, state="normal")
+
+            list_canvas.tag_raise(thumb)
+
+        def on_wheel(event):
+
+            lap_scroll(delta=(event.delta / 120.0) * ROW_H)
+
+            return "break"
+
+        def bind_wheel(widget):
+
+            widget.bind("<MouseWheel>", on_wheel)
+
+        bind_wheel(list_canvas)
+
+        bind_wheel(list_inner)
 
         def show_laps():
 
-            laps = sw["laps"][-3:]
+            for child in list_inner.winfo_children():
+                child.destroy()
 
-            lap_label.configure(
-                text="\n".join(
-                    f"Lap {len(sw['laps']) - len(laps) + i + 1}   "
-                    f"{self._stopwatch_text(total)[0]}"
-                    f"{self._stopwatch_text(total)[1]}"
-                    for i, total in enumerate(laps)
+            laps = sw["laps"]
+
+            if not laps:
+
+                laps_box.pack_forget()
+
+                return
+
+            splits = [
+                total - (laps[i - 1] if i else 0.0)
+                for i, total in enumerate(laps)
+            ]
+
+            fastest = min(splits) if len(splits) >= 3 else None
+            slowest = max(splits) if len(splits) >= 3 else None
+
+            for number in range(len(laps), 0, -1):
+
+                split = splits[number - 1]
+
+                if fastest is not None and split == fastest:
+                    split_color = GREEN
+                elif slowest is not None and split == slowest:
+                    split_color = RED
+                else:
+                    split_color = TEXT
+
+                row = tk.Frame(
+                    list_inner, bg=PANEL, width=LIST_W, height=ROW_H
                 )
+
+                row.pack(fill="x")
+
+                row.pack_propagate(False)
+
+                tk.Label(
+                    row, text=f"Lap {number}", bg=PANEL, fg=MUTED,
+                    font=("Segoe UI", 10)
+                ).place(x=14, rely=0.5, anchor="w")
+
+                tk.Label(
+                    row,
+                    text="".join(self._stopwatch_text(split)),
+                    bg=PANEL, fg=split_color,
+                    font=("Segoe UI", 11, "bold")
+                ).place(x=150, rely=0.5, anchor="center")
+
+                tk.Label(
+                    row,
+                    text="".join(self._stopwatch_text(laps[number - 1])),
+                    bg=PANEL, fg=MUTED,
+                    font=("Segoe UI", 10)
+                ).place(x=LIST_W - 22, rely=0.5, anchor="e")
+
+                for widget in [row] + list(row.winfo_children()):
+                    bind_wheel(widget)
+
+            visible = min(len(laps), MAX_ROWS) * ROW_H
+
+            list_canvas.configure(
+                height=visible,
+                scrollregion=(0, 0, LIST_W, len(laps) * ROW_H)
             )
+
+            list_canvas.yview_moveto(0)
+
+            list_canvas.after(20, draw_thumb)
+
+            if not laps_box.winfo_ismapped():
+                laps_box.pack(pady=(14, 30))
 
         def refresh():
 
@@ -16077,10 +16398,31 @@ class StudesticsApp(tk.Tk):
 
             main, fraction_text = self._stopwatch_text(elapsed)
 
-            canvas.itemconfigure(time_item, text=main)
-            canvas.itemconfigure(sub_item, text=fraction_text)
+            # Only touch the text when it changed (less repainting).
+            if ring_state.get("main") != main:
+                ring_state["main"] = main
+                canvas.itemconfigure(time_item, text=main)
 
-            draw_ring((elapsed % 60) / 60.0, sw["running"])
+            if ring_state.get("sub") != fraction_text:
+                ring_state["sub"] = fraction_text
+                canvas.itemconfigure(sub_item, text=fraction_text)
+
+            # The ring fills over one lap. Its length is the previous
+            # lap's time (a minute before the first lap is recorded).
+            laps_done = sw["laps"]
+
+            lap_start = laps_done[-1] if laps_done else 0.0
+
+            ref = (
+                laps_done[-1] - (laps_done[-2] if len(laps_done) > 1 else 0.0)
+                if laps_done else 60.0
+            )
+
+            ref = max(1.0, ref)
+
+            draw_ring(
+                ((elapsed - lap_start) % ref) / ref, sw["running"]
+            )
 
             start_button.configure(
                 text="Pause" if sw["running"] else (
@@ -16088,7 +16430,7 @@ class StudesticsApp(tk.Tk):
                 )
             )
 
-            canvas.after(50, refresh)
+            canvas.after(25, refresh)
 
         def toggle():
 
@@ -16184,8 +16526,6 @@ class StudesticsApp(tk.Tk):
             fg=MUTED_2,
             font=("Segoe UI", 9)
         ).pack(pady=(2, 0))
-
-        lap_label.pack(pady=(8, 30))
 
         show_laps()
 
