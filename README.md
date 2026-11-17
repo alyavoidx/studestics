@@ -198,8 +198,6 @@ The exe is created in `dist/`. Keep the `VERSION` line at the top of `Studestics
   <img src="https://contrib.rocks/image?repo=alyavoidx/studestics" alt="Contributors">
 </a>
 
-<sub>Styled after contrib.rocks</sub>
-
 <br>
 
 ## License
