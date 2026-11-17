@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.png" alt="Studestics" width="110">
+<img src="docs/screenshots/logo.png" alt="Studestics" width="110">
 
 # Studestics
 
