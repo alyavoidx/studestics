@@ -6179,11 +6179,15 @@ class StudesticsApp(tk.Tk):
                 self._upnext_window, width=event.width
             )
 
+            self._upnext_canvas.after(30, self._upnext_fade)
+
         def upnext_content(event):
 
             self._upnext_canvas.configure(
                 scrollregion=self._upnext_canvas.bbox("all")
             )
+
+            self._upnext_canvas.after(30, self._upnext_fade)
 
         self._upnext_canvas.bind("<Configure>", upnext_resized)
         self.sidebar_upnext_frame.bind("<Configure>", upnext_content)
@@ -6203,6 +6207,8 @@ class StudesticsApp(tk.Tk):
                 canvas.yview_scroll(
                     -1 if event.delta > 0 else 1, "units"
                 )
+
+                canvas.after(20, self._upnext_fade)
 
             except Exception:
                 pass
@@ -8198,13 +8204,15 @@ class StudesticsApp(tk.Tk):
 
         if HAS_PIL:
 
-            photo = ImageTk.PhotoImage(
-                mini_marker_image(icon, dot_color, 18)
-            )
+            marker_src = mini_marker_image(icon, dot_color, 18)
+
+            photo = ImageTk.PhotoImage(marker_src)
 
             dot = tk.Label(row, image=photo, bg=SIDEBAR, bd=0)
 
             dot.marker_photo = photo
+
+            dot.marker_img = marker_src
 
         else:
 
@@ -8576,6 +8584,98 @@ class StudesticsApp(tk.Tk):
             bind_tree(self.sidebar_upnext_frame)
 
             self._upnext_canvas.yview_moveto(0)
+
+            self._upnext_canvas.after(60, self._upnext_fade)
+
+        except Exception:
+            pass
+
+    def _upnext_fade(self):
+        """Fade whatever is near the top or bottom edge of the
+        Top tasks / Active goals area, so a row that is cut by the
+        edge looks like it continues instead of being sliced."""
+
+        try:
+
+            canvas = self._upnext_canvas
+
+            view_h = canvas.winfo_height()
+
+            if view_h < 30:
+                return
+
+            top = canvas.winfo_rooty()
+
+            zone = 34.0
+
+            # Only fade an edge that has more content beyond it.
+            total_h = max(1, self.sidebar_upnext_frame.winfo_reqheight())
+
+            scrolled = canvas.canvasy(0)
+
+            fade_top = scrolled > 2
+
+            fade_bottom = scrolled + view_h < total_h - 2
+
+            stack = [self.sidebar_upnext_frame]
+
+            while stack:
+
+                widget = stack.pop()
+
+                stack.extend(widget.winfo_children())
+
+                if not isinstance(widget, tk.Label):
+                    continue
+
+                centre = (
+                    widget.winfo_rooty() - top
+                    + widget.winfo_height() / 2.0
+                )
+
+                t = 1.0
+
+                if fade_bottom:
+                    t = min(t, (view_h - centre) / zone)
+
+                if fade_top:
+                    t = min(t, centre / zone)
+
+                t = max(0.0, t)
+
+                amount = round((1.0 - t) * 0.75 * 8) / 8.0
+
+                if getattr(widget, "_fade_amt", 0.0) == amount:
+                    continue
+
+                widget._fade_amt = amount
+
+                if hasattr(widget, "marker_img") and HAS_PIL:
+
+                    cache = widget.__dict__.setdefault("_fade_cache", {})
+
+                    if amount not in cache:
+
+                        img = widget.marker_img.copy()
+
+                        img.putalpha(
+                            img.getchannel("A").point(
+                                lambda v, a=amount: int(v * (1 - a))
+                            )
+                        )
+
+                        cache[amount] = ImageTk.PhotoImage(img)
+
+                    widget.configure(image=cache[amount])
+
+                    continue
+
+                if not hasattr(widget, "_fade_fg"):
+                    widget._fade_fg = widget.cget("fg")
+
+                widget.configure(
+                    fg=mix_color(widget._fade_fg, SIDEBAR, amount)
+                )
 
         except Exception:
             pass
