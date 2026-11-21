@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.7"
+VERSION = "1.6.8"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -4802,6 +4802,22 @@ class StudesticsApp(tk.Tk):
 
         super().__init__()
 
+        # Started by Windows at sign-in: hide the window the moment it
+        # exists, so nothing (not even a taskbar button) shows while
+        # the app loads. It then sits quietly in the tray.
+        self._quiet_until = 0.0
+
+        if "--background" in sys.argv:
+
+            try:
+                self.withdraw()
+            except Exception:
+                pass
+
+            # No pop-ups (reminders, overdue clean-up, update notice)
+            # for a little while after a silent start.
+            self._quiet_until = time.time() + 90
+
         # Start-up animation on/off (read straight from the settings
         # file: the database object doesn't exist yet).
         self._splash_anim = True
@@ -5522,7 +5538,8 @@ class StudesticsApp(tk.Tk):
         self.bind("<F11>", self.toggle_fullscreen)
 
         for key in ("<space>", "<KeyPress-l>", "<KeyPress-L>",
-                    "<KeyPress-r>", "<KeyPress-R>"):
+                    "<KeyPress-r>", "<KeyPress-R>",
+                    "<Left>", "<Right>"):
             self.bind(key, self._focus_keys, add="+")
         self.bind_all("<KeyPress>", self._zen_keys, add="+")
         self._install_text_shortcuts()
@@ -8044,13 +8061,27 @@ class StudesticsApp(tk.Tk):
             row=0, column=0, sticky="nsew", padx=(0, 8)
         )
 
-        self.section_title(
-            chart_inner,
-            "Last 7 days",
-            "Time focused per day  \u00b7  "
-            + fmt_duration(sum(secs for _, secs in week))
-            + " in total"
+        chart_state = {"month": False, "data": week}
+
+        head = tk.Frame(chart_inner, bg=PANEL)
+
+        head.pack(fill="x", padx=20, pady=(20, 12))
+
+        head_title = tk.Label(
+            head, bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")
         )
+
+        head_title.pack(anchor="w")
+
+        head_sub = tk.Label(
+            head, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)
+        )
+
+        head_sub.pack(anchor="w", pady=(2, 0))
+
+        toggle = self.make_button(head, "View month", None, width=11)
+
+        toggle.place(relx=1.0, y=0, anchor="ne")
 
         chart = tk.Canvas(
             chart_inner,
@@ -8068,10 +8099,46 @@ class StudesticsApp(tk.Tk):
             pady=(0, 18)
         )
 
+        def show_range():
+
+            days = 30 if chart_state["month"] else 7
+
+            data = self.db.focus_daily_seconds(days)
+
+            chart_state["data"] = data
+
+            head_title.configure(
+                text="Last 30 days" if days == 30 else "Last 7 days"
+            )
+
+            head_sub.configure(
+                text="Time focused per day  \u00b7  "
+                + fmt_duration(sum(secs for _, secs in data))
+                + " in total"
+            )
+
+            toggle.configure(
+                text="View week" if days == 30 else "View month"
+            )
+
+            chart._chart_key = None
+
+            self._draw_week_chart(chart, data)
+
+        def switch_range():
+            chart_state["month"] = not chart_state["month"]
+            show_range()
+
+        toggle.command = switch_range
+
         chart.bind(
             "<Configure>",
-            lambda event: self._draw_week_chart(chart, week)
+            lambda event: self._draw_week_chart(
+                chart, chart_state["data"]
+            )
         )
+
+        show_range()
 
         summary_outer, summary = self.rounded_panel(
             bottom,
@@ -8231,8 +8298,7 @@ class StudesticsApp(tk.Tk):
             pady=(5, 0)
         )
 
-        if len(title) > 22:
-            title = title[:21] + "…"
+        full_title = title
 
         # Title on top, due label under it, so neither is squeezed.
         text_box = tk.Frame(
@@ -8279,6 +8345,36 @@ class StudesticsApp(tk.Tk):
 
         except Exception:
             pass
+
+        # Long titles end in "…" where the row ends (measured in
+        # pixels, so it works at any display scaling).
+        def fit_title(event=None):
+
+            try:
+
+                room = text_box.winfo_width() - 8
+
+                if room < 40:
+                    return
+
+                font = tkfont.Font(font=name.cget("font"))
+
+                text = full_title
+
+                if font.measure(text) > room:
+
+                    while text and font.measure(text + "\u2026") > room:
+                        text = text[:-1]
+
+                    text = text.rstrip() + "\u2026"
+
+                if name.cget("text") != text:
+                    name.configure(text=text)
+
+            except Exception:
+                pass
+
+        text_box.bind("<Configure>", fit_title)
 
         parts = [row, dot, text_box, name]
 
@@ -9676,17 +9772,6 @@ class StudesticsApp(tk.Tk):
                 padx=(0, 8)
             )
 
-        self.make_button(
-            toolbar,
-            "Refresh",
-            lambda:
-                self.show_page("Tasks"),
-            width=9
-        ).pack(
-            side="left",
-            padx=(0, 8)
-        )
-
         def toggle_completed():
             self.tasks_show_completed = not self.tasks_show_completed
             self.tasks_page = 0
@@ -9697,6 +9782,17 @@ class StudesticsApp(tk.Tk):
             "Hide completed" if self.tasks_show_completed else "Show completed",
             toggle_completed,
             width=14
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        self.make_button(
+            toolbar,
+            "Refresh",
+            lambda:
+                self.show_page("Tasks"),
+            width=9
         ).pack(
             side="left"
         )
@@ -12783,8 +12879,20 @@ class StudesticsApp(tk.Tk):
                 width - pill_w - pill_margin - 18 - 24
             )
 
-            self._canvas_text(
-                canvas,
+            # On a picture, text gets a dark outline so it stays
+            # readable: same as the task cards.
+            def outlined(x, y, **kw):
+                if has_photo:
+                    dark = dict(kw)
+                    dark["fill"] = "#0A0A12"
+                    for dx, dy in (
+                        (-2, 0), (2, 0), (0, -2), (0, 2),
+                        (-1, -1), (1, -1), (-1, 1), (1, 1)
+                    ):
+                        self._canvas_text(canvas, x + dx, y + dy, **dark)
+                self._canvas_text(canvas, x, y, **kw)
+
+            outlined(
                 18, 20,
                 anchor="nw",
                 text=fit(goal["title"], title_font, max_text_w),
@@ -12810,7 +12918,7 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
-            canvas.create_text(
+            outlined(
                 18, card_height - 20,
                 anchor="sw",
                 text=("●  Active" if active else "●  Paused"),
@@ -13870,6 +13978,103 @@ class StudesticsApp(tk.Tk):
 
         show_setup()
 
+    def _notes_blank_tab(self):
+        """A new, empty, untitled note ("new 1", "new 2", ...)."""
+
+        tabs = getattr(self, "_note_tabs", [])
+
+        used = {t["num"] for t in tabs if not t["path"]}
+
+        num = 1
+
+        while num in used:
+            num += 1
+
+        self._note_serial = getattr(self, "_note_serial", 1) + 1
+
+        return {
+            "id": self._note_serial,
+            "num": num,
+            "text": "",
+            "path": "",
+            "dirty": False
+        }
+
+    def _notes_model(self):
+        """Loads the open notes (tabs) once: from the saved list, or
+        from the single note older versions kept."""
+
+        if hasattr(self, "_note_tabs"):
+            return
+
+        import json
+
+        tabs = []
+
+        try:
+
+            raw = self.db.get_setting("notes_tabs", "")
+
+            for item in (json.loads(raw) if raw else []):
+
+                tabs.append({
+                    "id": int(item.get("id", len(tabs) + 1)),
+                    "num": int(item.get("num", 1)),
+                    "text": str(item.get("text", "")),
+                    "path": str(item.get("path", "")),
+                    "dirty": bool(item.get("dirty", False))
+                })
+
+        except Exception:
+            tabs = []
+
+        if not tabs:
+
+            tabs = [{
+                "id": 1,
+                "num": 1,
+                "text": self.db.get_setting("notes_draft", ""),
+                "path": self.db.get_setting("notes_file", ""),
+                "dirty": self.db.get_setting("notes_dirty", "0") == "1"
+            }]
+
+        self._note_tabs = tabs
+
+        self._note_serial = max(t["id"] for t in tabs)
+
+        try:
+            active = int(self.db.get_setting("notes_active", "0"))
+        except ValueError:
+            active = 0
+
+        self._note_active = max(0, min(active, len(tabs) - 1))
+
+    def _notes_store(self):
+        """Saves the open notes so they are back after a restart."""
+
+        try:
+
+            import json
+
+            self.db.set_setting(
+                "notes_tabs",
+                json.dumps([
+                    {
+                        "id": t["id"],
+                        "num": t["num"],
+                        "text": t["text"],
+                        "path": t["path"],
+                        "dirty": t["dirty"]
+                    }
+                    for t in self._note_tabs
+                ])
+            )
+
+            self.db.set_setting("notes_active", str(self._note_active))
+
+        except Exception:
+            pass
+
     def build_notes(self):
 
         header = self.page_header(
@@ -13881,17 +14086,36 @@ class StudesticsApp(tk.Tk):
 
         db = self.db
 
-        # What's on screen survives page switches and restarts: the text
-        # is kept as a draft, plus which file (if any) it belongs to.
-        if not hasattr(self, "_note_text"):
+        # The open notes ("tabs") survive page switches and restarts.
+        self._notes_model()
 
-            self._note_text = db.get_setting("notes_draft", "")
-            self._note_path = db.get_setting("notes_file", "")
-            self._note_dirty = db.get_setting("notes_dirty", "0") == "1"
+        tabs = self._note_tabs
+
+        MAX_TABS = 20
+
+        def tab_now():
+            return tabs[self._note_active]
 
         bar = tk.Frame(self.page, bg=BG)
 
-        bar.pack(fill="x", pady=(0, 12))
+        bar.pack(fill="x", pady=(0, 10))
+
+        # A Notepad++-style tab bar: tabs side by side, the open one
+        # joined to the editor under it, a close mark that fades in on
+        # the open tab and on whichever tab the mouse is over.
+        strip = tk.Canvas(
+            self.page, height=38, bg=BG, highlightthickness=0, bd=0
+        )
+
+        strip.pack(fill="x")
+
+        tab_font = tkfont.Font(family="Segoe UI", size=10)
+
+        tab_state = {
+            "hover": None, "close_hover": False, "plus_hover": False,
+            "alpha": {}, "job": None, "layout": [], "plus": None,
+            "imgs": [], "shapes": {}, "grow": {}, "grow_job": None, "ghosts": []
+        }
 
         name_var = tk.StringVar()
         state_var = tk.StringVar()
@@ -13936,7 +14160,7 @@ class StudesticsApp(tk.Tk):
 
         self.emoji_attach(editor)
 
-        self.emoji_write(editor, self._note_text)
+        self.emoji_write(editor, tab_now()["text"])
         editor.edit_reset()
         editor.edit_modified(False)
 
@@ -13948,18 +14172,25 @@ class StudesticsApp(tk.Tk):
             font=("Segoe UI", 9)
         ).pack(side="left")
 
+        def tab_name(tab):
+
+            if tab["path"]:
+                return Path(tab["path"]).name
+
+            return f"new {tab['num']}"
+
         def file_label():
 
-            path = self._note_path
+            tab = tab_now()
 
-            name_var.set(Path(path).name if path else "Untitled")
+            name_var.set(tab_name(tab))
 
             state_var.set(
-                "●  Unsaved changes" if self._note_dirty else "Saved"
+                "\u25cf  Unsaved changes" if tab["dirty"] else "Saved"
             )
 
             state_label.configure(
-                fg=YELLOW if self._note_dirty else MUTED_2
+                fg=YELLOW if tab["dirty"] else MUTED_2
             )
 
         def update_status(event=None):
@@ -13971,7 +14202,7 @@ class StudesticsApp(tk.Tk):
                 words = len(editor.get("1.0", "end-1c").split())
 
                 status_var.set(
-                    f"Ln {line}, Col {int(col) + 1}   •   "
+                    f"Ln {line}, Col {int(col) + 1}   \u2022   "
                     f"{words} word{'s' if words != 1 else ''}"
                 )
 
@@ -13984,16 +14215,570 @@ class StudesticsApp(tk.Tk):
 
             draft_job["id"] = None
 
+            self._notes_store()
+
+        def capture():
+            """Remember the editor's text, cursor and scroll position
+            in the active tab."""
+
             try:
 
-                db.set_setting("notes_draft", self._note_text)
-                db.set_setting("notes_file", self._note_path)
-                db.set_setting(
-                    "notes_dirty", "1" if self._note_dirty else "0"
-                )
+                tab = tab_now()
+
+                tab["text"] = self.emoji_read(editor)
+                tab["cursor"] = editor.index("insert")
+                tab["yview"] = editor.yview()[0]
 
             except Exception:
                 pass
+
+        # ---------- the row of tabs ----------
+
+        def tab_shape(w, h, fill, accent=None):
+            """A tab: rounded at the top, flat at the bottom, with an
+            optional coloured line along the top edge."""
+
+            key = (w, h, fill, accent)
+
+            cache = tab_state["shapes"]
+
+            if key in cache:
+                return cache[key]
+
+            k = 4
+            r = 9 * k
+
+            def shape(color, top):
+
+                img = Image.new("RGBA", (w * k, h * k), (0, 0, 0, 0))
+
+                ImageDraw.Draw(img).rounded_rectangle(
+                    [0, top * k, w * k - 1, h * k + r],
+                    radius=r,
+                    fill=color
+                )
+
+                return img
+
+            if accent:
+
+                base = shape(accent, 0)
+
+                base.alpha_composite(shape(fill, 3))
+
+            else:
+
+                base = shape(fill, 0)
+
+            photo = ImageTk.PhotoImage(base.resize((w, h), Image.LANCZOS))
+
+            cache[key] = photo
+
+            return photo
+
+        def plus_shape(size, fill):
+
+            key = ("plus", size, fill)
+
+            cache = tab_state["shapes"]
+
+            if key not in cache:
+
+                k = 4
+
+                img = Image.new(
+                    "RGBA", (size * k, size * k), (0, 0, 0, 0)
+                )
+
+                ImageDraw.Draw(img).ellipse(
+                    [0, 0, size * k - 1, size * k - 1], fill=fill
+                )
+
+                cache[key] = ImageTk.PhotoImage(
+                    img.resize((size, size), Image.LANCZOS)
+                )
+
+            return cache[key]
+
+        def close_colour(entry):
+
+            tab = tabs[entry["index"]]
+
+            alpha = tab_state["alpha"].get(tab["id"], 0.0)
+
+            over = (
+                tab_state["close_hover"]
+                and tab_state["hover"] == entry["index"]
+            )
+
+            return mix_color(
+                entry["fill"], RED if over else TEXT, alpha
+            )
+
+        def fade_step():
+
+            tab_state["job"] = None
+
+            moving = False
+
+            try:
+
+                for entry in tab_state["layout"]:
+
+                    tab = tabs[entry["index"]]
+
+                    target = (
+                        1.0
+                        if entry["index"] in (
+                            self._note_active, tab_state["hover"]
+                        )
+                        else 0.0
+                    )
+
+                    now = tab_state["alpha"].get(tab["id"], 0.0)
+
+                    if now == target:
+                        continue
+
+                    now = (
+                        min(target, now + 0.16) if target > now
+                        else max(target, now - 0.16)
+                    )
+
+                    tab_state["alpha"][tab["id"]] = now
+
+                    strip.itemconfigure(
+                        entry["close"], fill=close_colour(entry)
+                    )
+
+                    moving = True
+
+                if moving:
+                    tab_state["job"] = strip.after(16, fade_step)
+
+            except Exception:
+                pass
+
+        def kick_fade():
+
+            if tab_state["job"] is None:
+                tab_state["job"] = strip.after(1, fade_step)
+
+        def grow_step():
+
+            tab_state["grow_job"] = None
+
+            try:
+
+                if not strip.winfo_exists():
+                    return
+
+                done = []
+
+                for tab_id in tab_state["grow"]:
+
+                    tab_state["grow"][tab_id] += 0.085
+
+                    if tab_state["grow"][tab_id] >= 1.0:
+                        done.append(tab_id)
+
+                for tab_id in done:
+                    del tab_state["grow"][tab_id]
+
+                for ghost in tab_state["ghosts"]:
+                    ghost["p"] -= 0.085
+
+                tab_state["ghosts"] = [
+                    g for g in tab_state["ghosts"] if g["p"] > 0
+                ]
+
+                render_tabs()
+
+                if tab_state["grow"] or tab_state["ghosts"]:
+                    tab_state["grow_job"] = strip.after(16, grow_step)
+
+            except Exception:
+                pass
+
+        def start_shrink(index, name, width):
+
+            tab_state["ghosts"].append(
+                {"pos": index, "name": name, "w": width, "p": 1.0}
+            )
+
+            if tab_state["grow_job"] is None:
+                tab_state["grow_job"] = strip.after(1, grow_step)
+
+        def draw_ghost(ghost, x, height, top):
+
+            eased = 1 - (1 - max(0.0, ghost["p"])) ** 3
+
+            width = max(2, int(ghost["w"] * eased))
+
+            fill = mix_color(BG, PANEL_2, 0.5)
+
+            photo = tab_shape(width, height, fill, None)
+
+            tab_state["imgs"].append(photo)
+
+            strip.create_image(x, top, anchor="nw", image=photo)
+
+            fade = max(0.0, (eased - 0.5) / 0.5)
+
+            if fade > 0:
+
+                strip.create_text(
+                    x + 16, top + height / 2 + 1, anchor="w",
+                    text=ghost["name"], font=tab_font,
+                    fill=mix_color(fill, MUTED, fade)
+                )
+
+            return width + 3
+
+        def start_grow(tab_id):
+
+            tab_state["grow"][tab_id] = 0.0
+
+            if tab_state["grow_job"] is None:
+                tab_state["grow_job"] = strip.after(1, grow_step)
+
+        def render_tabs():
+
+            try:
+
+                if not strip.winfo_exists():
+                    return
+
+            except Exception:
+                return
+
+            strip.delete("all")
+
+            tab_state["imgs"] = []
+            tab_state["layout"] = []
+
+            height = 36
+            top = 2
+            x = 2
+
+            for index, tab in enumerate(tabs):
+
+                for ghost in tab_state["ghosts"]:
+                    if ghost["pos"] == index:
+                        x += draw_ghost(ghost, x, height, top)
+
+                active = index == self._note_active
+                hovered = tab_state["hover"] == index
+
+                if tab["id"] not in tab_state["alpha"]:
+                    tab_state["alpha"][tab["id"]] = 1.0 if active else 0.0
+
+                name = tab_name(tab)
+
+                if len(name) > 20:
+                    name = name[:19] + "\u2026"
+
+                dirty = tab["dirty"]
+
+                width = max(
+                    100,
+                    16 + (12 if dirty else 0)
+                    + tab_font.measure(name) + 36
+                )
+
+                # With many tabs, squeeze them so they all stay visible.
+                squeeze = max(
+                    56,
+                    (strip.winfo_width() - 70) // max(1, len(tabs)) - 3
+                )
+
+                if width > squeeze:
+
+                    width = squeeze
+
+                    room = width - 16 - (12 if dirty else 0) - 30
+
+                    while len(name) > 1 and tab_font.measure(name) > room:
+                        name = name[:-2].rstrip() + "\u2026" \
+                            if not name.endswith("\u2026") \
+                            else name[:-2] + "\u2026"
+
+                # A newly opened tab grows out of the "+" (ease-out).
+                grow = tab_state["grow"].get(tab["id"])
+
+                if grow is not None:
+
+                    eased = 1 - (1 - min(1.0, grow)) ** 3
+
+                    width = max(30, int(width * eased))
+
+                else:
+                    eased = 1.0
+
+                fill = (
+                    PANEL_2 if active
+                    else mix_color(BG, PANEL_2, 0.85 if hovered else 0.5)
+                )
+
+                photo = tab_shape(
+                    width, height, fill, PURPLE if active else None
+                )
+
+                tab_state["imgs"].append(photo)
+
+                strip.create_image(x, top, anchor="nw", image=photo)
+
+                mid = top + height / 2 + 1
+
+                if dirty:
+
+                    strip.create_oval(
+                        x + 12, mid - 3, x + 18, mid + 3,
+                        fill=YELLOW, outline=""
+                    )
+
+                text_t = max(0.0, (eased - 0.5) / 0.5)
+
+                strip.create_text(
+                    x + 16 + (12 if dirty else 0), mid,
+                    anchor="w", text=name if text_t > 0 else "",
+                    font=tab_font,
+                    fill=mix_color(
+                        fill, TEXT if active else MUTED, text_t
+                    )
+                )
+
+                entry = {"index": index, "x0": x, "x1": x + width,
+                         "fill": fill}
+
+                if hovered and tab_state["close_hover"] and eased >= 1.0:
+
+                    strip.create_oval(
+                        x + width - 30, mid - 10,
+                        x + width - 10, mid + 10,
+                        fill=mix_color(fill, TEXT, 0.14), outline=""
+                    )
+
+                entry["close"] = f"tabclose{index}"
+
+                if text_t > 0:
+
+                    cxx = x + width - 20
+
+                    for coords in (
+                        (cxx - 4, mid - 4, cxx + 4, mid + 4),
+                        (cxx - 4, mid + 4, cxx + 4, mid - 4)
+                    ):
+
+                        strip.create_line(
+                            *coords, width=1.4, fill=fill,
+                            tags=(entry["close"],)
+                        )
+
+                strip.itemconfigure(
+                    entry["close"], fill=close_colour(entry)
+                )
+
+                tab_state["layout"].append(entry)
+
+                x += width + 3
+
+            for ghost in tab_state["ghosts"]:
+                if ghost["pos"] >= len(tabs):
+                    x += draw_ghost(ghost, x, height, top)
+
+            # The "+" that adds a new tab.
+            size = 28
+
+            plus_fill = mix_color(
+                BG, PANEL_2, 0.85 if tab_state["plus_hover"] else 0.5
+            )
+
+            photo = plus_shape(size, plus_fill)
+
+            tab_state["imgs"].append(photo)
+
+            # Pinned to the right edge so it never moves while spamming.
+            x = max(x, strip.winfo_width() - size - 12) - 6
+
+            strip.create_image(
+                x + 6, top + 4, anchor="nw", image=photo
+            )
+
+            cx = x + 6 + size / 2
+            cy = top + 4 + size / 2
+
+            for coords in (
+                (cx - 5, cy, cx + 5, cy), (cx, cy - 5, cx, cy + 5)
+            ):
+
+                strip.create_line(
+                    *coords, width=1.4, capstyle="butt",
+                    fill=TEXT if tab_state["plus_hover"] else MUTED
+                )
+
+            tab_state["plus"] = (x + 6, x + 6 + size)
+
+            kick_fade()
+
+        def tab_at(x):
+
+            for entry in tab_state["layout"]:
+
+                if entry["x0"] <= x < entry["x1"]:
+                    return entry
+
+            return None
+
+        def over_close(entry, x):
+
+            if entry is None or x < entry["x1"] - 32:
+                return False
+
+            tab = tabs[entry["index"]]
+
+            return tab_state["alpha"].get(tab["id"], 0.0) > 0.3
+
+        def over_plus(x):
+
+            zone = tab_state["plus"]
+
+            return bool(zone and zone[0] <= x < zone[1])
+
+        def tabs_motion(event):
+
+            entry = tab_at(event.x)
+
+            hover = entry["index"] if entry else None
+
+            close_hover = over_close(entry, event.x)
+
+            plus_hover = over_plus(event.x)
+
+            strip.configure(
+                cursor="hand2" if (entry or plus_hover) else ""
+            )
+
+            if (
+                hover != tab_state["hover"]
+                or close_hover != tab_state["close_hover"]
+                or plus_hover != tab_state["plus_hover"]
+            ):
+
+                tab_state["hover"] = hover
+                tab_state["close_hover"] = close_hover
+                tab_state["plus_hover"] = plus_hover
+
+                render_tabs()
+
+        def tabs_leave(event=None):
+
+            tab_state["hover"] = None
+            tab_state["close_hover"] = False
+            tab_state["plus_hover"] = False
+
+            render_tabs()
+
+        def tabs_click(event):
+
+            if over_plus(event.x):
+
+                new_tab()
+
+                return
+
+            entry = tab_at(event.x)
+
+            if entry is None:
+                return
+
+            if over_close(entry, event.x):
+                close_tab(entry["index"])
+            else:
+                switch_to(entry["index"])
+
+        def tabs_middle(event):
+
+            entry = tab_at(event.x)
+
+            if entry is not None:
+                close_tab(entry["index"])
+
+        strip.bind("<Configure>", lambda e: redraw_tabs_soon())
+        strip.bind("<Motion>", tabs_motion)
+        strip.bind("<Leave>", tabs_leave)
+        strip.bind("<Button-1>", tabs_click)
+        strip.bind("<Button-2>", tabs_middle)
+
+        def redraw_tabs_soon():
+
+            strip.after(1, render_tabs)
+
+        def load_active():
+
+            tab = tab_now()
+
+            editor.delete("1.0", "end")
+            self.emoji_write(editor, tab["text"])
+            editor.edit_reset()
+            editor.edit_modified(False)
+
+            try:
+
+                editor.mark_set("insert", tab.get("cursor", "1.0"))
+                editor.yview_moveto(tab.get("yview", 0.0))
+
+            except Exception:
+                editor.mark_set("insert", "1.0")
+
+            file_label()
+            update_status()
+
+            editor.focus_set()
+
+        def switch_to(index):
+
+            if index == self._note_active or not 0 <= index < len(tabs):
+                return
+
+            capture()
+
+            self._note_active = index
+
+            load_active()
+
+            store_draft()
+
+            redraw_tabs_soon()
+
+        def new_tab(event=None):
+
+            if len(tabs) >= MAX_TABS:
+
+                messagebox.showinfo(
+                    "Notes",
+                    f"That's the most tabs open at once ({MAX_TABS}). "
+                    "Close one first.",
+                    parent=self
+                )
+
+                return "break"
+
+            capture()
+
+            tabs.append(self._notes_blank_tab())
+
+            self._note_active = len(tabs) - 1
+
+            start_grow(tabs[-1]["id"])
+
+            load_active()
+
+            store_draft()
+
+            redraw_tabs_soon()
+
+            return "break"
 
         def on_modified(event=None):
 
@@ -14002,11 +14787,18 @@ class StudesticsApp(tk.Tk):
 
             editor.edit_modified(False)
 
-            self._note_text = self.emoji_read(editor)
-            self._note_dirty = True
+            tab = tab_now()
+
+            was_dirty = tab["dirty"]
+
+            tab["text"] = self.emoji_read(editor)
+            tab["dirty"] = True
 
             file_label()
             update_status()
+
+            if not was_dirty:
+                redraw_tabs_soon()
 
             if draft_job["id"] is not None:
 
@@ -14022,37 +14814,12 @@ class StudesticsApp(tk.Tk):
             if event is not None and event.widget is not editor:
                 return
 
+            # The text is already kept in step with every change, so
+            # only the pending save needs finishing here.
             if draft_job["id"] is not None:
                 store_draft()
 
-        def confirm_discard():
-
-            if not self._note_dirty:
-                return True
-
-            return messagebox.askyesno(
-                "Unsaved changes",
-                "This note has changes that aren't saved to a file. "
-                "Continue and discard them?",
-                parent=self
-            )
-
-        def set_content(text, path, dirty):
-
-            editor.delete("1.0", "end")
-            self.emoji_write(editor, text)
-            editor.edit_reset()
-            editor.edit_modified(False)
-            editor.mark_set("insert", "1.0")
-            editor.see("1.0")
-
-            self._note_text = text
-            self._note_path = path
-            self._note_dirty = dirty
-
-            store_draft()
-            file_label()
-            update_status()
+        # ---------- saving and opening ----------
 
         def write_to(path):
 
@@ -14071,18 +14838,23 @@ class StudesticsApp(tk.Tk):
 
                 return False
 
-            self._note_text = self.emoji_read(editor)
-            self._note_path = path
-            self._note_dirty = False
+            tab = tab_now()
+
+            tab["text"] = self.emoji_read(editor)
+            tab["path"] = path
+            tab["dirty"] = False
 
             store_draft()
             file_label()
+            redraw_tabs_soon()
 
             return True
 
-        def save_as(event=None):
+        def save_as_core():
 
-            start = Path(self._note_path) if self._note_path else None
+            tab = tab_now()
+
+            start = Path(tab["path"]) if tab["path"] else None
 
             options = {}
 
@@ -14101,24 +14873,33 @@ class StudesticsApp(tk.Tk):
                 **options
             )
 
-            if path:
-                write_to(path)
+            if not path:
+                return False
+
+            return write_to(path)
+
+        def save_core():
+
+            tab = tab_now()
+
+            if tab["path"]:
+                return write_to(tab["path"])
+
+            return save_as_core()
+
+        def save_as(event=None):
+
+            save_as_core()
 
             return "break"
 
         def save(event=None):
 
-            if self._note_path:
-                write_to(self._note_path)
-            else:
-                save_as()
+            save_core()
 
             return "break"
 
         def open_file(event=None):
-
-            if not confirm_discard():
-                return "break"
 
             path = filedialog.askopenfilename(
                 title="Open a text file",
@@ -14130,6 +14911,17 @@ class StudesticsApp(tk.Tk):
 
             if not path:
                 return "break"
+
+            # Already open? Just go to it.
+            for index, tab in enumerate(tabs):
+
+                if tab["path"] and os.path.normcase(
+                    tab["path"]
+                ) == os.path.normcase(path):
+
+                    switch_to(index)
+
+                    return "break"
 
             text = None
 
@@ -14155,18 +14947,144 @@ class StudesticsApp(tk.Tk):
 
                 return "break"
 
-            set_content(text.replace("\r\n", "\n"), path, False)
+            text = text.replace("\r\n", "\n")
+
+            current = tab_now()
+
+            # An empty, untouched tab is reused instead of left behind.
+            if (
+                not current["path"]
+                and not current["dirty"]
+                and not current["text"].strip()
+            ):
+
+                current["text"] = text
+                current["path"] = path
+                current["dirty"] = False
+
+                current.pop("cursor", None)
+                current.pop("yview", None)
+
+            else:
+
+                if len(tabs) >= MAX_TABS:
+
+                    messagebox.showinfo(
+                        "Notes",
+                        f"That's the most tabs open at once ({MAX_TABS}). "
+                        "Close one first.",
+                        parent=self
+                    )
+
+                    return "break"
+
+                capture()
+
+                tab = self._notes_blank_tab()
+
+                tab["text"] = text
+                tab["path"] = path
+
+                tabs.append(tab)
+
+                self._note_active = len(tabs) - 1
+
+                start_grow(tab["id"])
+
+            load_active()
+
+            store_draft()
+
+            redraw_tabs_soon()
 
             return "break"
 
-        def new_note(event=None):
+        def close_tab(index, event=None):
 
-            if confirm_discard():
-                set_content("", "", False)
+            if not 0 <= index < len(tabs):
+                return "break"
+
+            capture()
+
+            tab = tabs[index]
+
+            if tab["dirty"]:
+
+                answer = messagebox.askyesnocancel(
+                    "Unsaved changes",
+                    f"Save changes to {tab_name(tab)} before closing?",
+                    parent=self
+                )
+
+                if answer is None:
+                    return "break"
+
+                if answer:
+
+                    # The editor holds the active tab, so go there first.
+                    if index != self._note_active:
+
+                        self._note_active = index
+
+                        load_active()
+
+                    if not save_core():
+                        redraw_tabs_soon()
+                        return "break"
+
+            index = tabs.index(tab)
+
+            closed_w = 100
+
+            for entry in tab_state["layout"]:
+                if entry["index"] == index:
+                    closed_w = entry["x1"] - entry["x0"]
+
+            closed_name = tab_name(tab)
+
+            if len(closed_name) > 20:
+                closed_name = closed_name[:19] + "\u2026"
+
+            tabs.pop(index)
+
+            if tabs:
+                start_shrink(index, closed_name, closed_w)
+
+            if not tabs:
+                tabs.append(self._notes_blank_tab())
+
+            if index < self._note_active:
+                self._note_active -= 1
+
+            self._note_active = max(
+                0, min(self._note_active, len(tabs) - 1)
+            )
+
+            load_active()
+
+            store_draft()
+
+            redraw_tabs_soon()
 
             return "break"
 
-        self.make_button(bar, "New", new_note, width=7).pack(side="left")
+        def close_current(event=None):
+
+            return close_tab(self._note_active)
+
+        def next_tab(step):
+
+            def go(event=None):
+
+                if len(tabs) > 1:
+
+                    switch_to((self._note_active + step) % len(tabs))
+
+                return "break"
+
+            return go
+
+        self.make_button(bar, "New", new_tab, width=7).pack(side="left")
 
         self.make_button(
             bar, "Open", open_file, width=7
@@ -14222,7 +15140,12 @@ class StudesticsApp(tk.Tk):
         editor.bind("<Control-s>", save)
         editor.bind("<Control-S>", save_as)
         editor.bind("<Control-o>", open_file)
-        editor.bind("<Control-n>", new_note)
+        editor.bind("<Control-n>", new_tab)
+        editor.bind("<Control-t>", new_tab)
+        editor.bind("<Control-w>", close_current)
+        editor.bind("<Control-Tab>", next_tab(1))
+        editor.bind("<Control-Shift-Tab>", next_tab(-1))
+        editor.bind("<Control-ISO_Left_Tab>", next_tab(-1))
         editor.bind("<Destroy>", on_destroy)
 
         self._bind_word_delete(editor)
@@ -14235,6 +15158,7 @@ class StudesticsApp(tk.Tk):
 
         file_label()
         update_status()
+        render_tabs()
 
         editor.focus_set()
         editor.mark_set("insert", "end-1c")
@@ -14382,24 +15306,77 @@ class StudesticsApp(tk.Tk):
             if shown == today:
                 heading = f"Today  ·  {heading}"
 
+            day_off = str(shown) in self._schedule_off_days()
+
+            head = tk.Frame(inner, bg=PANEL)
+
+            head.pack(fill="x", padx=20, pady=(16, 10))
+
+            left = tk.Frame(head, bg=PANEL)
+
+            left.pack(side="left")
+
             tk.Label(
-                inner,
+                left,
                 text=heading,
                 bg=PANEL,
                 fg=TEXT,
                 font=("Segoe UI", 13, "bold")
-            ).pack(anchor="w", padx=20, pady=(16, 2))
+            ).pack(anchor="w")
+
+            # Turn the whole day's schedule (its reminders) on or off.
+            switch_box = tk.Frame(head, bg=PANEL)
+
+            # Right edge, centred vertically against the heading and
+            # the block count together.
+            switch_box.pack(side="right")
 
             tk.Label(
-                inner,
-                text=(
-                    f"{len(blocks)} block" + ("" if len(blocks) == 1 else "s")
-                    if blocks else "Nothing planned yet."
-                ),
+                switch_box,
+                text="Schedule on" if not day_off else "Schedule off",
                 bg=PANEL,
-                fg=MUTED_2,
+                fg=MUTED if not day_off else MUTED_2,
                 font=("Segoe UI", 9)
-            ).pack(anchor="w", padx=20, pady=(0, 10))
+            ).pack(side="left", padx=(0, 10))
+
+            def toggle_day(value, key=str(shown)):
+
+                days = self._schedule_off_days()
+
+                if value:
+                    days.discard(key)
+                else:
+                    days.add(key)
+
+                self.db.set_setting(
+                    "schedule_off_days", ",".join(sorted(days))
+                )
+
+                # Let the switch finish sliding, then redraw.
+                inner.after(260, lambda: render(False))
+
+            self.make_switch(
+                switch_box, on=not day_off, command=toggle_day, bg=PANEL
+            ).pack(side="left")
+
+            count_text = (
+                f"{len(blocks)} block" + ("" if len(blocks) == 1 else "s")
+                if blocks else "Nothing planned yet."
+            )
+
+            if day_off:
+                count_text += (
+                    "  \u00b7  Off for this day: no reminders"
+                    if blocks else "  \u00b7  Off for this day"
+                )
+
+            tk.Label(
+                left,
+                text=count_text,
+                bg=PANEL,
+                fg=MUTED_2 if not day_off else YELLOW,
+                font=("Segoe UI", 9)
+            ).pack(anchor="w", pady=(2, 0))
 
             if not blocks:
 
@@ -14407,7 +15384,7 @@ class StudesticsApp(tk.Tk):
 
             next_id = None
 
-            if shown == today:
+            if shown == today and not day_off:
 
                 for b in blocks:
 
@@ -14421,6 +15398,7 @@ class StudesticsApp(tk.Tk):
 
                 running = (
                     shown == today
+                    and not day_off
                     and b["start_min"] <= now_min < b["end_min"]
                 )
 
@@ -15458,6 +16436,20 @@ class StudesticsApp(tk.Tk):
 
         self.show_page("Schedule")
 
+    def _schedule_off_days(self):
+        """Weekday numbers (as text, '0' = Monday) whose schedule is
+        switched off."""
+
+        try:
+
+            raw = self.db.get_setting("schedule_off_days", "") or ""
+
+            return {d for d in raw.split(",") if d.strip() in
+                    ("0", "1", "2", "3", "4", "5", "6")}
+
+        except Exception:
+            return set()
+
     def _schedule_tick(self):
         """Pops up a reminder when a block is about to start."""
 
@@ -15484,6 +16476,9 @@ class StudesticsApp(tk.Tk):
                         continue
 
                     if str(now.weekday()) not in block["days"].split(","):
+                        continue
+
+                    if str(now.weekday()) in self._schedule_off_days():
                         continue
 
                     trigger = block["start_min"] - block["remind_before"]
@@ -15742,9 +16737,6 @@ class StudesticsApp(tk.Tk):
 
             try:
 
-                if getattr(self, "focus_view", "timer") != "timer":
-                    return
-
                 panel_h = panel.winfo_height()
                 content_h = content.winfo_reqheight()
 
@@ -15752,7 +16744,22 @@ class StudesticsApp(tk.Tk):
 
                 y = max(top, (panel_h - content_h) // 2)
 
-                content.place(relx=0.5, y=y, anchor="n")
+                if getattr(self, "focus_view", "timer") == "timer":
+
+                    content.place(relx=0.5, y=y, anchor="n")
+
+                else:
+
+                    # Put the stopwatch ring at the same height as the
+                    # timer's clock, so switching tabs doesn't make it
+                    # jump. (Its ring canvas is 300 px tall.)
+                    centre = y + self.focus_ring_canvas.winfo_reqheight() / 2
+
+                    stopwatch_view.place(
+                        relx=0.5,
+                        y=max(top - 14, int(centre - 150)),
+                        anchor="n"
+                    )
 
             except Exception:
                 pass
@@ -15773,21 +16780,51 @@ class StudesticsApp(tk.Tk):
             for name, button in tab_buttons.items():
                 button.configure(selected=(name == mode))
 
+            # The full-screen button only makes sense for the timer.
+            try:
+
+                full_icon = self._corner["icons"].get("full")
+                music_icon = self._corner["icons"].get("music")
+
+                if full_icon is not None:
+
+                    if mode == "stopwatch":
+                        full_icon.place_forget()
+                    else:
+                        full_icon.place(
+                            relx=1.0, rely=1.0, x=-14, y=-14, anchor="se"
+                        )
+
+                # With the full-screen button gone, the music button
+                # takes its corner spot.
+                if music_icon is not None:
+
+                    music_icon.place(
+                        relx=1.0, rely=1.0,
+                        x=-14 if mode == "stopwatch" else -58,
+                        y=-14, anchor="se"
+                    )
+
+            except Exception:
+                pass
+
             if mode == "stopwatch":
 
                 content.place_forget()
 
-                stopwatch_view.place(
-                    relx=0.5, rely=0.5, anchor="center"
-                )
+                stopwatch_view.place(relx=0.5, y=80, anchor="n")
 
                 stopwatch_view.lift()
+
+                place_content()
 
             else:
 
                 stopwatch_view.place_forget()
 
                 place_content()
+
+        self._focus_show_mode = show_mode
 
         for name, label in (("timer", "Timer"), ("stopwatch", "Stopwatch")):
 
@@ -16137,6 +17174,18 @@ class StudesticsApp(tk.Tk):
                 return
 
             key = event.keysym.lower()
+
+            # Left / Right switch between Timer and Stopwatch.
+            if key in ("left", "right"):
+
+                switch = getattr(self, "_focus_show_mode", None)
+
+                if switch is None:
+                    return
+
+                switch("timer" if key == "left" else "stopwatch")
+
+                return "break"
 
             if getattr(self, "focus_view", "timer") == "stopwatch":
 
@@ -16507,22 +17556,28 @@ class StudesticsApp(tk.Tk):
                 ring_state["sub"] = fraction_text
                 canvas.itemconfigure(sub_item, text=fraction_text)
 
-            # The ring fills over one lap. Its length is the previous
-            # lap's time (a minute before the first lap is recorded).
+            # The ring only starts once you have pressed Lap: it fills
+            # over the length of your previous lap, and starts again
+            # at every Lap. Before the first lap it stays empty.
             laps_done = sw["laps"]
 
-            lap_start = laps_done[-1] if laps_done else 0.0
+            if not laps_done:
 
-            ref = (
-                laps_done[-1] - (laps_done[-2] if len(laps_done) > 1 else 0.0)
-                if laps_done else 60.0
-            )
+                draw_ring(0.0, sw["running"])
 
-            ref = max(1.0, ref)
+            else:
 
-            draw_ring(
-                ((elapsed - lap_start) % ref) / ref, sw["running"]
-            )
+                lap_start = laps_done[-1]
+
+                ref = max(
+                    1.0,
+                    laps_done[-1]
+                    - (laps_done[-2] if len(laps_done) > 1 else 0.0)
+                )
+
+                draw_ring(
+                    ((elapsed - lap_start) % ref) / ref, sw["running"]
+                )
 
             start_button.configure(
                 text="Pause" if sw["running"] else (
@@ -19035,6 +20090,14 @@ class StudesticsApp(tk.Tk):
         if self._fullscreen:
             return
 
+        # The full-screen view only shows the timer, so it isn't
+        # offered while the Stopwatch tab is open.
+        if (
+            self.current_page == "Focus Mode"
+            and getattr(self, "focus_view", "timer") == "stopwatch"
+        ):
+            return
+
         x, y, sw, sh = self._monitor_rect()
 
         win = tk.Toplevel(self)
@@ -19304,6 +20367,7 @@ class StudesticsApp(tk.Tk):
             if (
                 key in ("f", "F", "space")
                 and self.current_page == "Focus Mode"
+                and getattr(self, "focus_view", "timer") != "stopwatch"
                 and event.widget.winfo_toplevel() is self
             ):
 
@@ -25002,19 +26066,15 @@ class StudesticsApp(tk.Tk):
         notes are dropped and the editor becomes a new, untitled note
         (so a file you had open is not overwritten)."""
 
-        old = getattr(self, "_note_text", None)
+        self._notes_model()
 
-        if old is None:
-            old = self.db.get_setting("notes_draft", "")
+        tab = self._note_tabs[self._note_active]
 
-        # The Notes page reads these when it opens.
-        if not hasattr(self, "_note_path"):
-            self._note_path = self.db.get_setting("notes_file", "")
+        old = tab["text"]
 
         if replace:
             old = ""
-            self._note_path = ""
-            self.db.set_setting("notes_file", "")
+            tab["path"] = ""
 
         new = (
             (old.rstrip("\n") + "\n\n" if old.strip() else "")
@@ -25022,12 +26082,10 @@ class StudesticsApp(tk.Tk):
             + "\n"
         )
 
-        self._note_text = new
+        tab["text"] = new
+        tab["dirty"] = True
 
-        self.db.set_setting("notes_draft", new)
-        self.db.set_setting("notes_dirty", "1")
-
-        self._note_dirty = True
+        self._notes_store()
 
     def _notes_command(self, user_text, replace=False, extra_parts=None):
         """/notes <topic>  writes study notes on the topic into Notes.
@@ -30513,7 +31571,8 @@ class StudesticsApp(tk.Tk):
             return
 
         # The Notes editor must not write its old text back.
-        for attr in ("_note_text", "_note_path", "_note_dirty"):
+        for attr in ("_note_text", "_note_path", "_note_dirty",
+                     "_note_tabs", "_note_active"):
 
             if hasattr(self, attr):
                 delattr(self, attr)
@@ -30579,7 +31638,8 @@ class StudesticsApp(tk.Tk):
         self.db.delete_all_user_data()
 
         # Forget the editor's in-memory text too.
-        for attr in ("_note_text", "_note_path", "_note_dirty"):
+        for attr in ("_note_text", "_note_path", "_note_dirty",
+                     "_note_tabs", "_note_active"):
 
             if hasattr(self, attr):
                 delattr(self, attr)
@@ -31825,21 +32885,31 @@ class StudesticsApp(tk.Tk):
 
         return row, meta_label
 
-    def _alert_snooze_row(self, foot, minutes_list, command, mute=None):
-        """'Snooze  5m 10m 30m' pills, and an optional Mute."""
+    def _alert_snooze_row(
+        self, foot, minutes_list, command, mute=None, into=None
+    ):
+        """The optional Mute button. (Snooze was removed: nobody
+        used it, so `minutes_list` and `command` are ignored.)"""
 
-        outer = tk.Frame(foot, bg=BG)
+        minutes_list = ()
 
-        outer.pack(fill="x", pady=(0, 12))
+        if mute is None:
+            return None
 
-        line = tk.Frame(outer, bg=BG)
+        if into is not None:
 
-        line.pack()
+            # Sits in the same row as the other buttons.
+            line = into
 
-        tk.Label(
-            line, text="Snooze", bg=BG, fg=MUTED,
-            font=("Segoe UI", 9)
-        ).pack(side="left", padx=(0, 10))
+        else:
+
+            outer = tk.Frame(foot, bg=BG)
+
+            outer.pack(fill="x", pady=(0, 12))
+
+            line = tk.Frame(outer, bg=BG)
+
+            line.pack()
 
         for minutes in minutes_list:
 
@@ -31880,7 +32950,9 @@ class StudesticsApp(tk.Tk):
                 line, "Mute", toggle_mute, width=7
             )
 
-            holder["button"].pack(side="left", padx=(10, 0))
+            holder["button"].pack(
+                side="left", padx=4 if into is not None else 0
+            )
 
         return line
 
@@ -32076,6 +33148,9 @@ class StudesticsApp(tk.Tk):
     def _reminder_tick(self):
 
         try:
+
+            if time.time() < getattr(self, "_quiet_until", 0.0):
+                return
 
             if self.initialized and self.db and not self._quitting:
 
@@ -32642,6 +33717,13 @@ class StudesticsApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _auto_update_tick(self):
+
+        # Silent start: wait until the quiet period is over.
+        if time.time() < getattr(self, "_quiet_until", 0.0):
+
+            self.after(15000, self._auto_update_tick)
+
+            return
 
         try:
 
@@ -33690,11 +34772,6 @@ class StudesticsApp(tk.Tk):
 
         foot = shell["foot"]
 
-        self._alert_snooze_row(
-            foot, (5, 10, 30, 60), snooze,
-            mute=self.stop_alarm if loud else None
-        )
-
         bar = tk.Frame(foot, bg=BG)
 
         bar.pack()
@@ -33703,34 +34780,44 @@ class StudesticsApp(tk.Tk):
             (t["id"] for t in tasks if t["id"] is not None), None
         )
 
+        # Mute joins the other buttons in one row (a little narrower
+        # when there are five of them, so they all fit).
+        btn_w = 7 if (loud and first_id is not None and count == 1) else 9
+
+        self._alert_snooze_row(
+            foot, (), snooze,
+            mute=self.stop_alarm if loud else None,
+            into=bar
+        )
+
         def open_app():
             self.restore_window()
             self.show_page("Tasks")
             win.destroy()
 
         self.make_button(
-            bar, "Dismiss", win.destroy, width=9, active=RED
+            bar, "Dismiss", win.destroy, width=btn_w, active=RED
         ).pack(
             side="left", padx=4
         )
 
         if first_id is not None and count == 1:
             self.make_button(
-                bar, "Done", lambda: finish(first_id), width=9
+                bar, "Done", lambda: finish(first_id), width=btn_w
             ).pack(side="left", padx=4)
 
         if first_id is not None:
-            self.make_button(bar, "Open app", open_app, width=9).pack(
+            self.make_button(bar, "Open app", open_app, width=btn_w).pack(
                 side="left", padx=4
             )
             go = self.make_button(
                 bar, "Start focus",
                 lambda: (self._start_focus_from_alert(first_id),
                          win.destroy()),
-                width=9
+                width=btn_w
             )
         else:
-            go = self.make_button(bar, "Open app", open_app, width=9)
+            go = self.make_button(bar, "Open app", open_app, width=btn_w)
 
         go.configure(selected=True)
 
