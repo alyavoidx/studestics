@@ -1,0 +1,88 @@
+name: Build and sign
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyinstaller pillow pystray google-genai
+
+      - name: Check VERSION matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: python
+        run: |
+          import re, os, sys
+          src = open("Studestics.py", encoding="utf-8").read()
+          version = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M).group(1)
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if version != tag:
+              sys.exit(f"VERSION {version} does not match tag {tag}")
+
+      - name: Write exe version info
+        shell: python
+        run: |
+          import re
+          src = open("Studestics.py", encoding="utf-8").read()
+          v = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M).group(1)
+          parts = (v.split(".") + ["0", "0", "0"])[:4]
+          tup = ", ".join(parts)
+          open("version_info.txt", "w").write(f'''VSVersionInfo(
+            ffi=FixedFileInfo(filevers=({tup}), prodvers=({tup}), mask=0x3f,
+              flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+            kids=[
+              StringFileInfo([StringTable("040904B0", [
+                StringStruct("CompanyName", "Studestics"),
+                StringStruct("FileDescription", "Studestics"),
+                StringStruct("FileVersion", "{v}"),
+                StringStruct("InternalName", "Studestics"),
+                StringStruct("OriginalFilename", "Studestics.exe"),
+                StringStruct("ProductName", "Studestics"),
+                StringStruct("ProductVersion", "{v}")])]),
+              VarFileInfo([VarStruct("Translation", [1033, 1200])])
+            ])''')
+
+      - name: Build exe
+        run: >
+          pyinstaller --onefile --noconsole --name Studestics
+          --version-file version_info.txt Studestics.py
+
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: dist/Studestics.exe
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: studestics
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-exe
+          path: signed/Studestics.exe
