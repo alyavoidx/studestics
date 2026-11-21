@@ -206,7 +206,36 @@ See [LICENSE](LICENSE).
 
 <div align="center">
 <br>
+<!-- Add this section to README.md (e.g. just before "License"), and add
+     "- [Code signing policy](#code-signing-policy)" and
+     "- [Privacy](#privacy)" to the Contents list. -->
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Studestics.exe is built from the source in this repository by a GitHub Actions workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)). Every release is signed only after it is approved manually.
+
+| Role | Who |
+|---|---|
+| Authors (commit access) | [alyavoidx](https://github.com/alyavoidx) |
+| Reviewers | [alyavoidx](https://github.com/alyavoidx) |
+| Approvers (approve each signing request) | [alyavoidx](https://github.com/alyavoidx) |
+
+## Privacy
+
+Studestics keeps your tasks, goals, notes and settings in a local database on your computer.
+
+It does not send data anywhere on its own. It contacts the network only when:
+
+- **You use an AI feature** (AI Chat, or **Quiz me** on a note). The text you send goes to Google Gemini with your own API key, under [Google's terms](https://ai.google.dev/gemini-api/terms).
+- **It checks for updates**, which asks GitHub for the latest release number.
+
+The Gemini features only run when you use them, and you can use the app without ever adding an API key.
+
+
 
 **Leave a star if you like the project.**
+              ❤️‍🩹🫶🌟
 
 </div>
