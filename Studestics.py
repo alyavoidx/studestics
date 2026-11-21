@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.8"
+VERSION = "1.6.9"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -4569,6 +4569,12 @@ class RoundedButton:
     def place(self, *args, **kwargs):
         self.canvas.place(*args, **kwargs)
 
+    def pack_forget(self):
+        self.canvas.pack_forget()
+
+    def winfo_ismapped(self):
+        return self.canvas.winfo_ismapped()
+
     def destroy(self):
         self.canvas.destroy()
 
@@ -4616,6 +4622,126 @@ def _tick_badge_image(size, color):
 
 
 _EDGE_STRIPES = {}
+
+
+def _has_alpha(picture):
+
+    return (
+        picture.mode in ("RGBA", "LA", "PA")
+        or "transparency" in picture.info
+    )
+
+
+def _flatten_picture(picture):
+    """A picture with see-through parts as plain RGB. The see-through
+    parts are filled with the picture's own average colour (a touch
+    darker), so cut-out edges blend in instead of turning black."""
+
+    picture = picture.convert("RGBA")
+
+    tiny = picture.resize((24, 24))
+
+    total = [0, 0, 0]
+    count = 0
+
+    for r, g, b, a in tiny.getdata():
+
+        if a > 32:
+            total[0] += r
+            total[1] += g
+            total[2] += b
+            count += 1
+
+    if count:
+        mean = tuple(t // count for t in total)
+    else:
+        mean = _hex_rgb(PANEL_2)
+
+    fill = tuple(int(c * 0.85) for c in mean)
+
+    backdrop = Image.new("RGBA", picture.size, fill + (255,))
+
+    backdrop.alpha_composite(picture)
+
+    return backdrop.convert("RGB")
+
+
+def _punch_grey(img):
+    """Grey / low-colour pictures look washed out on a card, so they
+    get a little more contrast and are darkened slightly. Pictures
+    with real colour are returned unchanged."""
+
+    try:
+
+        sat = img.convert("HSV").resize((1, 1)).getpixel((0, 1 - 1))[1]
+
+        if sat < 40:
+
+            img = ImageEnhance.Contrast(img).enhance(1.3)
+            img = ImageEnhance.Brightness(img).enhance(0.82)
+
+    except Exception:
+        pass
+
+    return img
+
+
+def _image_accent(img):
+    """The most striking colour in a picture, as a '#rrggbb' string
+    (bright enough to show as a card edge), or None for a grey picture."""
+
+    import colorsys
+
+    try:
+
+        small = img.convert("RGB").resize((48, 48))
+
+        bins = {}
+
+        for r, g, b in small.getdata():
+
+            h, sat, val = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+
+            if sat < 0.25 or val < 0.3:
+                continue
+
+            key = int(h * 24) % 24
+
+            entry = bins.setdefault(key, [0.0, 0.0, 0.0, 0.0])
+
+            weight = sat * val
+
+            entry[0] += weight
+            entry[1] += r * weight
+            entry[2] += g * weight
+            entry[3] += b * weight
+
+        if not bins:
+
+            # A grey picture: a light, slightly cool grey edge fits it
+            # better than a colour that isn't in the picture.
+            mean = small.convert("L").resize((1, 1)).getpixel((0, 0))
+
+            grey = max(180, min(215, mean + 70))
+
+            return "#%02x%02x%02x" % (grey, grey, min(255, grey + 10))
+
+        best = max(bins.values(), key=lambda e: e[0])
+
+        r, g, b = (best[i] / best[0] / 255 for i in (1, 2, 3))
+
+        h, sat, val = colorsys.rgb_to_hsv(r, g, b)
+
+        r, g, b = colorsys.hsv_to_rgb(
+            h, max(sat, 0.5), max(val, 0.85)
+        )
+
+        return "#%02x%02x%02x" % (
+            int(r * 255), int(g * 255), int(b * 255)
+        )
+
+    except Exception:
+        return None
 
 
 def _edge_stripe_image(color, height, radius, thickness=5):
@@ -10124,7 +10250,10 @@ class StudesticsApp(tk.Tk):
             # Cards are at most ~900 px wide; a bit more for sharpness.
             image.thumbnail((1400, 1400), Image.LANCZOS)
 
-            image = image.convert("RGB")
+            image = (
+                _flatten_picture(image) if _has_alpha(image)
+                else image.convert("RGB")
+            )
 
         except Exception:
             return None
@@ -10957,15 +11086,32 @@ class StudesticsApp(tk.Tk):
 
                 title_x = 46
 
-            shown_title = fit(
-                title, title_font, max_text_w - (title_x - 18)
-            )
+            # A long title shrinks to fit; "..." only as a last resort.
+            title_room = max_text_w - (title_x - 18)
+            shown_font = title_font
+            shown_title = title
+
+            if title_font.measure(shown_title) > title_room:
+
+                for size in range(11, 7, -1):
+
+                    shown_font = tkfont.Font(
+                        family="Segoe UI", size=size, weight="bold"
+                    )
+
+                    if shown_font.measure(shown_title) <= title_room:
+                        break
+
+                else:
+                    shown_title = fit(shown_title, shown_font, title_room)
+
+            canvas._task_title_font = shown_font
 
             outlined(
                 title_x, 20,
                 anchor="nw",
                 text=shown_title,
-                font=title_font,
+                font=shown_font,
                 fill=(
                     mix_color(TEXT, MUTED, 0.45) if is_completed
                     else ("#FFFFFF" if has_photo else TEXT)
@@ -10976,11 +11122,11 @@ class StudesticsApp(tk.Tk):
             if is_completed:
 
                 # Struck through: it's done.
-                line_y = 20 + title_font.metrics("linespace") // 2 + 1
+                line_y = 20 + shown_font.metrics("linespace") // 2 + 1
 
                 canvas.create_line(
                     title_x, line_y,
-                    title_x + title_font.measure(shown_title), line_y,
+                    title_x + shown_font.measure(shown_title), line_y,
                     fill=mix_color(TEXT, MUTED, 0.45),
                     width=1,
                     tags="card_text"
@@ -11738,16 +11884,45 @@ class StudesticsApp(tk.Tk):
             side="left"
         )
 
-        tk.Label(
+        name_label = tk.Label(
             attachment_row,
             textvariable=selected_name,
             bg=BG,
             fg=MUTED_2,
             font=("Segoe UI", 9)
-        ).pack(
+        )
+
+        name_label.pack(
             side="left",
             padx=12
         )
+
+        # Shown whenever the task has a picture (new or edited).
+        if True:
+
+            clear_button = self.make_button(
+                attachment_row, "Clear image",
+                lambda: selected_path.set(""), width=11
+            )
+
+            def show_clear(*_):
+
+                if selected_path.get():
+
+                    if not clear_button.winfo_ismapped():
+
+                        # Before the file name, so it can't be pushed
+                        # out of the row by a long name.
+                        clear_button.pack(
+                            side="left", padx=(8, 0), before=name_label
+                        )
+
+                else:
+                    clear_button.pack_forget()
+
+            selected_path.trace_add("write", show_clear)
+
+            show_clear()
 
         def save():
 
@@ -12273,6 +12448,212 @@ class StudesticsApp(tk.Tk):
 
         return {"frame": frame, "get": get_value}
 
+    def crop_picture_dialog(self, source_path, aspect=3.1):
+        """Lets the user choose which part of a picture a card shows:
+        drag to move the frame, scroll to zoom. Returns ("crop", image),
+        ("whole", None) to use the picture as it is, or None if cancelled."""
+
+        try:
+
+            original = Image.open(source_path)
+            original.load()
+
+        except Exception:
+            return ("whole", None)
+
+        shown = (
+            _flatten_picture(original) if _has_alpha(original)
+            else original.convert("RGB")
+        )
+
+        pw, ph = shown.size
+
+        box_w, box_h = 640, 340
+
+        scale = min(box_w / pw, box_h / ph)
+
+        view_w = max(1, int(pw * scale))
+        view_h = max(1, int(ph * scale))
+
+        bright = shown.resize((view_w, view_h), Image.LANCZOS)
+        dim = ImageEnhance.Brightness(bright).enhance(0.35)
+
+        # Frame size in picture pixels at zoom 1 (as large as fits).
+        base_w = min(pw, ph * aspect)
+
+        state = {
+            "zoom": 1.0, "cx": pw / 2, "cy": ph / 2,
+            "drag": None, "result": None, "photos": []
+        }
+
+        window = tk.Toplevel(self)
+        window.title("Choose the part to show")
+
+        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+
+        self.center_window(window, 700, 540)
+
+        window.configure(bg=BG)
+        window.transient(self)
+        window.grab_set()
+
+        tk.Label(
+            window, text="Choose the part to show",
+            bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")
+        ).pack(anchor="w", padx=28, pady=(18, 2))
+
+        tk.Label(
+            window,
+            text="Drag to move the frame. Scroll to zoom in or out.",
+            bg=BG, fg=MUTED
+        ).pack(anchor="w", padx=28, pady=(0, 10))
+
+        canvas = tk.Canvas(
+            window, width=box_w, height=box_h, bg=PANEL,
+            highlightthickness=0, bd=0
+        )
+
+        canvas.pack(padx=28)
+
+        ox = (box_w - view_w) // 2
+        oy = (box_h - view_h) // 2
+
+        def frame_size():
+
+            w = base_w / state["zoom"]
+
+            return w, w / aspect
+
+        def clamp():
+
+            w, h = frame_size()
+
+            state["cx"] = min(max(state["cx"], w / 2), pw - w / 2)
+            state["cy"] = min(max(state["cy"], h / 2), ph - h / 2)
+
+        def draw():
+
+            clamp()
+
+            w, h = frame_size()
+
+            x0 = (state["cx"] - w / 2) * scale
+            y0 = (state["cy"] - h / 2) * scale
+            x1 = (state["cx"] + w / 2) * scale
+            y1 = (state["cy"] + h / 2) * scale
+
+            canvas.delete("all")
+
+            state["photos"] = [
+                ImageTk.PhotoImage(dim),
+                ImageTk.PhotoImage(
+                    bright.crop(
+                        (int(x0), int(y0), int(x1) + 1, int(y1) + 1)
+                    )
+                )
+            ]
+
+            canvas.create_image(
+                ox, oy, anchor="nw", image=state["photos"][0]
+            )
+
+            canvas.create_image(
+                ox + int(x0), oy + int(y0), anchor="nw",
+                image=state["photos"][1]
+            )
+
+            canvas.create_rectangle(
+                ox + x0, oy + y0, ox + x1, oy + y1,
+                outline=PURPLE_HOVER, width=2
+            )
+
+        def press(event):
+
+            state["drag"] = (event.x, event.y, state["cx"], state["cy"])
+
+        def move(event):
+
+            if not state["drag"]:
+                return
+
+            sx, sy, cx, cy = state["drag"]
+
+            state["cx"] = cx + (event.x - sx) / scale
+            state["cy"] = cy + (event.y - sy) / scale
+
+            draw()
+
+        def wheel(event):
+
+            step = 1.1 ** (event.delta / 120)
+
+            state["zoom"] = min(8.0, max(1.0, state["zoom"] * step))
+
+            draw()
+
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<B1-Motion>", move)
+        canvas.bind("<MouseWheel>", wheel)
+
+        canvas.configure(cursor="fleur")
+
+        def finish(kind):
+
+            if kind == "crop":
+
+                w, h = frame_size()
+
+                left = int(state["cx"] - w / 2)
+                top = int(state["cy"] - h / 2)
+
+                piece = original.crop(
+                    (left, top, int(left + w), int(top + h))
+                )
+
+                if piece.width > 1400:
+
+                    piece = piece.resize(
+                        (1400, max(1, int(1400 / aspect))), Image.LANCZOS
+                    )
+
+                state["result"] = ("crop", piece)
+
+            elif kind == "whole":
+                state["result"] = ("whole", None)
+
+            window.destroy()
+
+        buttons = tk.Frame(window, bg=BG)
+
+        buttons.pack(fill="x", padx=28, pady=(16, 0))
+
+        use = self.make_button(
+            buttons, "Use this part", lambda: finish("crop"), width=14
+        )
+
+        use.configure(selected=True)
+        use.pack(side="left")
+
+        self.make_button(
+            buttons, "Use whole picture", lambda: finish("whole"),
+            width=17
+        ).pack(side="left", padx=8)
+
+        self.make_button(
+            buttons, "Cancel", lambda: finish("cancel"), width=9
+        ).pack(side="left")
+
+        window.bind("<Return>", lambda e: finish("crop"))
+        window.bind("<Escape>", lambda e: finish("cancel"))
+
+        draw()
+
+        window.focus_set()
+
+        self.wait_window(window)
+
+        return state["result"]
+
     def select_attachment(
         self,
         variable
@@ -12304,6 +12685,47 @@ class StudesticsApp(tk.Tk):
             "_",
             source.name
         )
+
+        # Choose which part of the picture the card shows.
+        if HAS_PIL:
+
+            chosen = self.crop_picture_dialog(path)
+
+            if chosen is None:
+                return
+
+            if chosen[0] == "crop":
+
+                piece = chosen[1]
+
+                stem = Path(safe_name).stem
+
+                keep_alpha = _has_alpha(piece)
+
+                cropped_to = (
+                    ATTACH_DIR /
+                    f"{int(datetime.now().timestamp())}_{stem}"
+                    f"{'.png' if keep_alpha else '.jpg'}"
+                )
+
+                try:
+
+                    if keep_alpha:
+                        piece.convert("RGBA").save(cropped_to)
+                    else:
+                        piece.convert("RGB").save(
+                            cropped_to, quality=93
+                        )
+
+                    variable.set(str(cropped_to))
+
+                except Exception as exc:
+
+                    messagebox.showerror(
+                        "Attachment", str(exc), parent=self
+                    )
+
+                return
 
         destination = (
             ATTACH_DIR /
@@ -12653,7 +13075,13 @@ class StudesticsApp(tk.Tk):
             path = goal["image_path"]
 
             if path and Path(path).exists():
-                return Image.open(path).convert("RGB")
+
+                picture = Image.open(path)
+
+                if _has_alpha(picture):
+                    return _punch_grey(_flatten_picture(picture))
+
+                return _punch_grey(picture.convert("RGB"))
 
         except Exception:
             pass
@@ -12737,6 +13165,18 @@ class StudesticsApp(tk.Tk):
         card_color = PANEL_2 if active else DEEP
         source_image = self._goal_image(goal)
         has_photo = source_image is not None
+
+        # The coloured edge takes its colour from the goal's picture.
+        edge_colour = PURPLE if active else MUTED_2
+
+        if has_photo:
+
+            picked = _image_accent(source_image)
+
+            if picked:
+                edge_colour = (
+                    picked if active else mix_color(picked, MUTED_2, 0.6)
+                )
 
         canvas = tk.Canvas(
             parent,
@@ -12892,11 +13332,33 @@ class StudesticsApp(tk.Tk):
                         self._canvas_text(canvas, x + dx, y + dy, **dark)
                 self._canvas_text(canvas, x, y, **kw)
 
+            # A long title shrinks to fit; "..." only as a last resort.
+            shown_font = title_font
+            shown_title = goal["title"]
+
+            if title_font.measure(shown_title) > max_text_w:
+
+                for size in range(11, 7, -1):
+
+                    trial = tkfont.Font(
+                        family="Segoe UI", size=size, weight="bold"
+                    )
+
+                    shown_font = trial
+
+                    if trial.measure(shown_title) <= max_text_w:
+                        break
+
+                else:
+                    shown_title = fit(shown_title, shown_font, max_text_w)
+
+            canvas._goal_title_font = shown_font
+
             outlined(
                 18, 20,
                 anchor="nw",
-                text=fit(goal["title"], title_font, max_text_w),
-                font=title_font,
+                text=shown_title,
+                font=shown_font,
                 fill=(
                     "#FFFFFF" if has_photo
                     else (TEXT if active else MUTED)
@@ -12933,7 +13395,7 @@ class StudesticsApp(tk.Tk):
             # Coloured edge, like task cards: purple = active.
             self._edge_stripe(
                 canvas,
-                PURPLE if active else MUTED_2,
+                edge_colour,
                 card_height,
                 radius
             )
@@ -13267,23 +13729,45 @@ class StudesticsApp(tk.Tk):
             lambda: self.select_attachment(selected_path)
         ).pack(side="left")
 
-        self.make_button(
-            attachment_row,
-            "Remove",
-            lambda: selected_path.set(""),
-            width=9
-        ).pack(side="left", padx=(8, 0))
-
-        tk.Label(
+        name_label = tk.Label(
             attachment_row,
             textvariable=selected_name,
             bg=BG,
             fg=MUTED_2,
             font=("Segoe UI", 9)
-        ).pack(
+        )
+
+        name_label.pack(
             side="left",
             padx=12
         )
+
+        # Shown whenever the goal has a picture (new or edited).
+        if True:
+
+            clear_button = self.make_button(
+                attachment_row, "Clear image",
+                lambda: selected_path.set(""), width=11
+            )
+
+            def show_clear(*_):
+
+                if selected_path.get():
+
+                    if not clear_button.winfo_ismapped():
+
+                        # Before the file name, so it can't be pushed
+                        # out of the row by a long name.
+                        clear_button.pack(
+                            side="left", padx=(8, 0), before=name_label
+                        )
+
+                else:
+                    clear_button.pack_forget()
+
+            selected_path.trace_add("write", show_clear)
+
+            show_clear()
 
         def save():
 
@@ -33734,7 +34218,7 @@ class StudesticsApp(tk.Tk):
             pass
 
         if not self._quitting:
-            self.after(12 * 3600 * 1000, self._auto_update_tick)
+            self.after(30 * 60 * 1000, self._auto_update_tick)
 
     def _notes_box(self, parent, text):
         """The release notes in a box you can scroll with the mouse
