@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.95"
+VERSION = "1.6.96"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -9294,6 +9294,424 @@ class StudesticsApp(tk.Tk):
                 padx=10
             )
 
+    # --------------------------------------------------------
+    # Sorting (Tasks and Goals)
+    # --------------------------------------------------------
+
+    TASK_SORTS = [
+        ("created", "Date created"),
+        ("deadline", "Deadline"),
+        ("priority", "Priority"),
+        ("name", "Name"),
+    ]
+
+    GOAL_SORTS = [
+        ("created", "Date created"),
+        ("status", "Status"),
+        ("name", "Name"),
+    ]
+
+    def _sort_choice(self, scope):
+
+        options = self.TASK_SORTS if scope == "tasks" else self.GOAL_SORTS
+
+        key = self.db.get_setting(f"{scope}_sort", "created")
+
+        if key not in [k for k, _ in options]:
+            key = "created"
+
+        direction = self.db.get_setting(f"{scope}_sort_dir", "desc")
+
+        return key, ("asc" if direction == "asc" else "desc")
+
+    def _sort_items(self, items, scope):
+        """Tasks or goals in the order picked under Sort. Newest first
+        is the default."""
+
+        key, direction = self._sort_choice(scope)
+
+        reverse = direction == "desc"
+
+        items = list(items)
+
+        if key == "deadline":
+
+            dated = [t for t in items if t["deadline"]]
+            undated = [t for t in items if not t["deadline"]]
+
+            dated.sort(key=lambda t: t["deadline"], reverse=reverse)
+
+            return dated + undated
+
+        if key == "priority":
+
+            rank = {"Low": 0, "Medium": 1, "High": 2}
+
+            return sorted(
+                items, key=lambda t: rank.get(t["priority"], 1),
+                reverse=reverse
+            )
+
+        if key == "status":
+
+            return sorted(
+                items, key=lambda g: int(g["active"] or 0),
+                reverse=reverse
+            )
+
+        if key == "name":
+
+            return sorted(
+                items, key=lambda t: str(t["title"]).casefold(),
+                reverse=reverse
+            )
+
+        return sorted(items, key=lambda t: t["id"], reverse=reverse)
+
+    def _sort_button(self, parent, scope, after_change):
+        """A 'Sort' button that opens an Explorer-style menu: what to
+        sort by, then Ascending / Descending."""
+
+        options = self.TASK_SORTS if scope == "tasks" else self.GOAL_SORTS
+
+        button = self.make_button(
+            parent, "Sort  \u25BE", lambda: toggle(), width=9
+        )
+
+        def close(animate=True):
+
+            state = getattr(self, "_sort_menu_state", None)
+
+            if not state or state.get("win") is None:
+                return
+
+            win = state["win"]
+
+            state["win"] = None
+
+            def done():
+
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+            if not animate:
+                done()
+                return
+
+            def step(i=4):
+
+                try:
+
+                    win.attributes("-alpha", i / 4)
+
+                    if i <= 0:
+                        done()
+                    else:
+                        win.after(12, lambda: step(i - 1))
+
+                except Exception:
+                    done()
+
+            step()
+
+        def choose(kind, value):
+
+            close()
+
+            if kind == "key":
+                self.db.set_setting(f"{scope}_sort", value)
+            else:
+                self.db.set_setting(f"{scope}_sort_dir", value)
+
+            after_change()
+
+        def toggle():
+
+            state = getattr(self, "_sort_menu_state", None)
+
+            if state and state.get("win") is not None:
+
+                close()
+
+                return
+
+            open_menu()
+
+        def open_menu():
+
+            key, direction = self._sort_choice(scope)
+
+            win = tk.Toplevel(self)
+
+            win.withdraw()
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.attributes("-alpha", 0.0)
+            win.configure(bg=BORDER)
+
+            frame = tk.Frame(win, bg=PANEL_2)
+
+            frame.pack(padx=1, pady=1)
+
+            sort_w = max(
+                200,
+                max(
+                    tkfont.Font(family=UI_FONT, size=10).measure(t)
+                    for t in [l for _, l in options]
+                    + ["Ascending", "Descending"]
+                ) + 80
+            )
+
+            def add_row(text, selected, kind, value):
+
+                self._menu_row(
+                    frame, PANEL_2,
+                    [
+                        ("\u25CF" if selected else "", (UI_FONT, 8),
+                         PURPLE_HOVER, 18),
+                        (text, (UI_FONT, 10), TEXT, 38)
+                    ],
+                    [],
+                    lambda: choose(kind, value),
+                    height=34, width=sort_w
+                ).pack(fill="x", padx=4, pady=1)
+
+            tk.Frame(frame, bg=PANEL_2, height=4).pack()
+
+            for option_key, option_label in options:
+                add_row(option_label, option_key == key, "key", option_key)
+
+            tk.Frame(frame, bg=BORDER, height=1).pack(
+                fill="x", pady=4
+            )
+
+            add_row("Ascending", direction == "asc", "dir", "asc")
+            add_row("Descending", direction == "desc", "dir", "desc")
+
+            tk.Frame(frame, bg=PANEL_2, height=4).pack()
+
+            win.update_idletasks()
+
+            width = max(win.winfo_reqwidth(), 200)
+            full = win.winfo_reqheight()
+
+            canvas = button.canvas
+
+            left = canvas.winfo_rootx()
+            top = canvas.winfo_rooty() + canvas.winfo_height() + 4
+
+            win.geometry(f"{width}x{full}+{left}+{top - 8}")
+
+            win.deiconify()
+            win.lift()
+
+            self._sort_menu_state = {
+                "win": win, "button": canvas, "close": close
+            }
+
+            def grow(i=1):
+
+                try:
+
+                    state = getattr(self, "_sort_menu_state", None)
+
+                    if not state or state.get("win") is not win:
+                        return
+
+                    t = 1 - (1 - i / 6) ** 3
+
+                    win.geometry(
+                        f"{width}x{full}+{left}+{top - int(8 * (1 - t))}"
+                    )
+
+                    win.attributes("-alpha", t)
+
+                    if i < 6:
+                        win.after(14, lambda: grow(i + 1))
+
+                except Exception:
+                    pass
+
+            grow()
+
+        if not getattr(self, "_sort_menu_bound", False):
+
+            self._sort_menu_bound = True
+
+            def inside(widget, x, y):
+
+                return (
+                    widget.winfo_rootx() <= x
+                    < widget.winfo_rootx() + widget.winfo_width()
+                    and widget.winfo_rooty() <= y
+                    < widget.winfo_rooty() + widget.winfo_height()
+                )
+
+            def shared(event):
+
+                state = getattr(self, "_sort_menu_state", None)
+
+                if not state or state.get("win") is None:
+                    return
+
+                try:
+
+                    if not state["win"].winfo_exists():
+                        self._sort_menu_state = None
+                        return
+
+                    kind = (
+                        event.type.name if hasattr(event.type, "name")
+                        else str(event.type)
+                    )
+
+                    if kind == "Configure":
+
+                        if event.widget is self:
+                            state["close"](False)
+
+                        return
+
+                    x, y = event.x_root, event.y_root
+
+                    if inside(state["win"], x, y):
+                        return
+
+                    # The Sort button toggles the menu itself.
+                    if kind == "ButtonPress" and inside(
+                        state["button"], x, y
+                    ):
+                        return
+
+                    state["close"](kind == "ButtonPress")
+
+                except Exception:
+                    pass
+
+            self.bind_all("<Button-1>", shared, add="+")
+            self.bind("<MouseWheel>", shared, add="+")
+            self.bind("<Configure>", shared, add="+")
+
+        return button
+
+    def _menu_row(
+        self, parent, bg, left, right, command, height=34, width=200,
+        cross=None, radius=9
+    ):
+        """One row of a pop-up menu with a rounded hover highlight.
+        left / right are lists of (text, font, colour, offset_px) drawn
+        from the left or right edge. cross (optional) is a callback for
+        a small x at the right end."""
+
+        canvas = tk.Canvas(
+            parent, bg=bg, height=height, width=width,
+            highlightthickness=0, bd=0, cursor="hand2"
+        )
+
+        state = {"hover": False, "cross": False, "photo": None}
+
+        cache = getattr(self, "_hl_cache", None)
+
+        if cache is None:
+            cache = self._hl_cache = {}
+
+        def draw(_event=None):
+
+            w = max(canvas.winfo_width(), 20)
+
+            canvas.delete("all")
+
+            if state["hover"]:
+
+                key = (w, height, HOVER_BG, bg, radius)
+
+                if key not in cache:
+
+                    if len(cache) > 60:
+                        cache.clear()
+
+                    big = Image.new(
+                        "RGBA", (w * 4, height * 4), (0, 0, 0, 0)
+                    )
+
+                    ImageDraw.Draw(big).rounded_rectangle(
+                        [0, 0, w * 4 - 1, height * 4 - 1],
+                        radius=radius * 4, fill=HOVER_BG
+                    )
+
+                    cache[key] = ImageTk.PhotoImage(
+                        big.resize((w, height), Image.LANCZOS)
+                    )
+
+                state["photo"] = cache[key]
+
+                canvas.create_image(0, 0, anchor="nw", image=state["photo"])
+
+            for text, font, colour, offset in left:
+
+                canvas.create_text(
+                    offset, height / 2, anchor="w", text=text,
+                    font=font, fill=colour
+                )
+
+            for text, font, colour, offset in right:
+
+                canvas.create_text(
+                    w - offset, height / 2, anchor="e", text=text,
+                    font=font, fill=colour
+                )
+
+            if cross:
+
+                canvas.create_text(
+                    w - 16, height / 2, text="\u2715",
+                    font=(UI_FONT, 9),
+                    fill=RED if state["cross"] else MUTED_2
+                )
+
+        def over_cross(x):
+
+            return bool(cross) and x > canvas.winfo_width() - 34
+
+        def enter(_event=None):
+
+            state["hover"] = True
+            draw()
+
+        def leave(_event=None):
+
+            state["hover"] = False
+            state["cross"] = False
+            draw()
+
+        def motion(event):
+
+            now = over_cross(event.x)
+
+            if now != state["cross"]:
+
+                state["cross"] = now
+                draw()
+
+        def click(event):
+
+            if over_cross(event.x):
+                cross()
+            else:
+                command()
+
+        canvas.bind("<Configure>", draw)
+        canvas.bind("<Enter>", enter)
+        canvas.bind("<Leave>", leave)
+        canvas.bind("<Motion>", motion)
+        canvas.bind("<ButtonRelease-1>", click)
+
+        draw()
+
+        return canvas
+
     def _scroll_area(self, parent, bg=PANEL):
         """A list area that scrolls with the mouse wheel when its
         content is taller than the space (with a thin bar showing where
@@ -9373,55 +9791,50 @@ class StudesticsApp(tk.Tk):
         canvas.bind("<Configure>", layout)
         inner.bind("<Configure>", layout)
 
-        targets = getattr(self, "_wheel_targets", None)
+        # The wheel is bound through a private bindtag on this area's own
+        # widgets, not bind_all: other pages replace the global wheel
+        # binding, which used to switch scrolling off here.
+        tag = f"ScrollArea{id(canvas)}"
 
-        if targets is None:
+        def on_wheel(event):
 
-            targets = self._wheel_targets = []
+            try:
 
-            def on_wheel(event):
+                first, last = canvas.yview()
 
-                try:
+                if last - first < 0.999:
 
-                    under = self.winfo_containing(
-                        event.x_root, event.y_root
+                    canvas.yview_scroll(
+                        int(-event.delta / 120) * 2, "units"
                     )
 
-                except Exception:
-                    return
+            except Exception:
+                pass
 
-                for target in list(targets):
+        self.bind_class(tag, "<MouseWheel>", on_wheel)
 
-                    try:
+        def tag_all(widget):
 
-                        if not target.winfo_exists():
-                            targets.remove(target)
-                            continue
+            try:
 
-                    except Exception:
-                        targets.remove(target)
-                        continue
+                tags = widget.bindtags()
 
-                    widget = under
+                if tag not in tags:
+                    widget.bindtags((tag,) + tuple(tags))
 
-                    while widget is not None and widget is not target:
-                        widget = widget.master
+                for child in widget.winfo_children():
+                    tag_all(child)
 
-                    if widget is target:
+            except Exception:
+                pass
 
-                        first, last = target.yview()
+        def retag(_event=None):
 
-                        if last - first < 0.999:
+            tag_all(canvas)
 
-                            target.yview_scroll(
-                                int(-event.delta / 120) * 2, "units"
-                            )
+        inner.bind("<Configure>", retag, add="+")
 
-                        return
-
-            self.bind_all("<MouseWheel>", on_wheel, add="+")
-
-        targets.append(canvas)
+        retag()
 
         return inner
 
@@ -10120,6 +10533,16 @@ class StudesticsApp(tk.Tk):
                 self.show_page("Tasks"),
             width=9
         ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        def sorted_again():
+
+            self.tasks_page = 0
+            self.show_page("Tasks")
+
+        self._sort_button(toolbar, "tasks", sorted_again).pack(
             side="left"
         )
 
@@ -10211,6 +10634,10 @@ class StudesticsApp(tk.Tk):
                 task for task in tasks
                 if task["status"] == "Completed"
             ]
+
+        # Order picked under Sort (newest first by default). The
+        # dashboard and sidebar still list by nearest deadline.
+        tasks = self._sort_items(tasks, "tasks")
 
         max_rows = 4
         min_card_height = 130
@@ -11352,11 +11779,28 @@ class StudesticsApp(tk.Tk):
                 f"  •  {task['priority']}"
             )
 
+            tail = (
+                "  \u2022  " + due_text if due_text
+                else "  \u2022  Completed" if is_completed
+                else ""
+            )
+
+            # The whole line shrinks a little rather than run under the
+            # buttons (wider fonts need this).
+            meta_font = small_font
+
+            for size in (9, 8, 7):
+
+                meta_font = tkfont.Font(family=UI_FONT, size=size)
+
+                if meta_font.measure(meta + tail) <= max_text_w:
+                    break
+
             outlined(
                 18, card_height - 20,
                 anchor="sw",
                 text=meta,
-                font=small_font,
+                font=meta_font,
                 fill=(
                     "#FFFFFF"
                     if has_photo
@@ -11368,10 +11812,10 @@ class StudesticsApp(tk.Tk):
             if due_text:
 
                 outlined(
-                    18 + small_font.measure(meta), card_height - 20,
+                    18 + meta_font.measure(meta), card_height - 20,
                     anchor="sw",
                     text="  \u2022  " + due_text,
-                    font=small_font,
+                    font=meta_font,
                     fill=due_color,
                     tags="card_text"
                 )
@@ -11379,10 +11823,10 @@ class StudesticsApp(tk.Tk):
             elif is_completed:
 
                 outlined(
-                    18 + small_font.measure(meta), card_height - 20,
+                    18 + meta_font.measure(meta), card_height - 20,
                     anchor="sw",
                     text="  \u2022  Completed",
-                    font=small_font,
+                    font=meta_font,
                     fill=GREEN,
                     tags="card_text"
                 )
@@ -12520,7 +12964,9 @@ class StudesticsApp(tk.Tk):
 
                 digits = "".join(c for c in entry.get() if c.isdigit())
 
-                if digits:
+                # With "No deadline" chosen, the untouched time boxes
+                # must not quietly bring a date back.
+                if digits and state.sel is not None:
                     commit(int(digits))
 
                 redraw(True)
@@ -13042,17 +13488,30 @@ class StudesticsApp(tk.Tk):
             "Keep your long-term direction visible."
         )
 
+        toolbar = tk.Frame(self.page, bg=BG)
+
+        toolbar.pack(fill="x", pady=(0, 16))
+
         self.make_button(
-            self.page,
+            toolbar,
             "+ New goal",
             self.new_goal_dialog
         ).pack(
-            anchor="w",
-            pady=(0, 16)
+            side="left",
+            padx=(0, 8)
+        )
+
+        def sorted_again():
+
+            self.goals_page = 0
+            self.show_page("Goals")
+
+        self._sort_button(toolbar, "goals", sorted_again).pack(
+            side="left"
         )
 
         self._build_paged_grid(
-            self.db.get_goals(False),
+            self._sort_items(self.db.get_goals(False), "goals"),
             self._goal_card_canvas,
             "No goals yet.",
             "goals_page"
@@ -15268,7 +15727,7 @@ class StudesticsApp(tk.Tk):
             size = 28
 
             plus_fill = mix_color(
-                BG, PANEL_2, 0.85 if tab_state["plus_hover"] else 0.5
+                PANEL_2, TEXT, 0.28 if tab_state["plus_hover"] else 0.16
             )
 
             photo = plus_shape(size, plus_fill)
@@ -15286,12 +15745,12 @@ class StudesticsApp(tk.Tk):
             cy = top + 4 + size / 2
 
             for coords in (
-                (cx - 5, cy, cx + 5, cy), (cx, cy - 5, cx, cy + 5)
+                (cx - 6, cy, cx + 6, cy), (cx, cy - 6, cx, cy + 6)
             ):
 
                 strip.create_line(
-                    *coords, width=1.4, capstyle="butt",
-                    fill=TEXT if tab_state["plus_hover"] else MUTED
+                    *coords, width=2, capstyle="butt",
+                    fill=TEXT
                 )
 
             tab_state["plus"] = (x + 6, x + 6 + size)
@@ -30084,6 +30543,10 @@ class StudesticsApp(tk.Tk):
                 active=priority_color(level)
             ).pack(side="left", padx=(0, 8))
 
+        tk.Frame(rem_panel, bg=BORDER, height=1).pack(
+            fill="x", padx=25, pady=(16, 0)
+        )
+
         auto_row = tk.Frame(
             rem_panel,
             bg=PANEL
@@ -30092,14 +30555,15 @@ class StudesticsApp(tk.Tk):
         auto_row.pack(
             fill="x",
             padx=25,
-            pady=(10, 2)
+            pady=(14, 4)
         )
 
         tk.Label(
             auto_row,
             text="Remove overdue tasks automatically",
             bg=PANEL,
-            fg=MUTED
+            fg=TEXT,
+            font=(UI_FONT, 11, "bold")
         ).pack(
             side="left"
         )
@@ -30127,14 +30591,14 @@ class StudesticsApp(tk.Tk):
                  "one alert when it runs out. Completed tasks are "
                  "never removed.",
             bg=PANEL,
-            fg=MUTED_2,
-            font=(UI_FONT, 8),
+            fg=MUTED,
+            font=(UI_FONT, 9),
             wraplength=650,
             justify="left"
         ).pack(
             anchor="w",
             padx=25,
-            pady=(0, 10)
+            pady=(0, 12)
         )
 
         note = (
@@ -32220,77 +32684,28 @@ class StudesticsApp(tk.Tk):
 
             def add_row(name, text, note, removable=False, font_name=None):
 
-                row = tk.Frame(inner, bg=PANEL_2, cursor="hand2")
+                left = [
+                    ("\u2713" if name == now else "",
+                     (UI_FONT, 10, "bold"), PURPLE_HOVER, 16),
+                    (text, (font_name or UI_FONT, 11), TEXT, 42)
+                ]
 
-                row.pack(fill="x", padx=4, pady=1)
+                right = [(note, (UI_FONT, 8), MUTED_2,
+                          44 if removable else 14)]
 
-                mark = tk.Label(
-                    row, text="\u2713" if name == now else "",
-                    bg=PANEL_2, fg=PURPLE_HOVER,
-                    font=(UI_FONT, 10, "bold"), width=2
-                )
-
-                mark.pack(side="left", padx=(6, 0))
-
-                title = tk.Label(
-                    row, text=text, bg=PANEL_2, fg=TEXT,
-                    font=(font_name or UI_FONT, 11),
-                    anchor="w", pady=7
-                )
-
-                title.pack(side="left")
-
-                cross = None
-
-                if removable:
-
-                    cross = tk.Label(
-                        row, text="\u2715", bg=PANEL_2, fg=MUTED_2,
-                        font=(UI_FONT, 9), padx=10, cursor="hand2"
+                self._menu_row(
+                    inner, PANEL_2, left, right,
+                    lambda n=name: (
+                        close_menu(False if n is None else True),
+                        self.after(40, add_font_file)
+                        if n is None else choose(n)
+                    ),
+                    height=38, width=100,
+                    cross=(
+                        (lambda n=name: (close_menu(), remove_font(n)))
+                        if removable else None
                     )
-
-                    cross.pack(side="right")
-
-                    cross.bind(
-                        "<Enter>", lambda e: cross.configure(fg=RED)
-                    )
-
-                    cross.bind(
-                        "<Leave>", lambda e: cross.configure(fg=MUTED_2)
-                    )
-
-                    cross.bind(
-                        "<ButtonRelease-1>",
-                        lambda e, n=name: (close_menu(), remove_font(n))
-                    )
-
-                hint = tk.Label(
-                    row, text=note, bg=PANEL_2, fg=MUTED_2,
-                    font=(UI_FONT, 8), padx=12
-                )
-
-                hint.pack(side="right")
-
-                parts = (row, mark, title, hint)
-
-                def paint(colour):
-
-                    for part in parts + ((cross,) if cross else ()):
-                        part.configure(bg=colour)
-
-                for part in parts:
-
-                    part.bind("<Enter>", lambda e: paint(HOVER_BG))
-                    part.bind("<Leave>", lambda e: paint(PANEL_2))
-
-                    part.bind(
-                        "<ButtonRelease-1>",
-                        lambda e, n=name: (
-                            close_menu(False if n is None else True),
-                            self.after(40, add_font_file)
-                            if n is None else choose(n)
-                        )
-                    )
+                ).pack(fill="x", padx=4, pady=1)
 
             for name, note in builtin:
                 add_row(name, name, note, font_name=name)
@@ -32429,7 +32844,7 @@ class StudesticsApp(tk.Tk):
                     pass
 
             self.bind_all("<Button-1>", shared, add="+")
-            self.bind_all("<MouseWheel>", shared, add="+")
+            self.bind("<MouseWheel>", shared, add="+")
             self.bind("<Configure>", shared, add="+")
 
         # Coming back to Settings before restarting keeps the reminder.
@@ -34201,23 +34616,84 @@ class StudesticsApp(tk.Tk):
 
         if lines:
 
-            card = tk.Frame(shell["body"], bg=PANEL_2)
+            text_font = tkfont.Font(family=UI_FONT, size=10)
 
-            card.pack(fill="x")
+            radius = 12
+            pad_y = 12
+            text_x = 24
 
-            tk.Frame(card, bg=accent, width=4).pack(side="left", fill="y")
+            box = tk.Canvas(
+                shell["body"], bg=BG, highlightthickness=0, bd=0,
+                height=10
+            )
 
-            inner = tk.Frame(card, bg=PANEL_2)
+            box.pack(fill="x")
 
-            inner.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+            y = pad_y
 
-            for line in lines:
+            for number, line in enumerate(lines):
 
-                tk.Label(
-                    inner, text=line, bg=PANEL_2,
-                    fg=TEXT if line else MUTED, font=(UI_FONT, 10),
-                    anchor="w", justify="left", wraplength=400
-                ).pack(anchor="w", pady=1)
+                tag = f"line{number}"
+
+                self._canvas_text(
+                    box, text_x, y, anchor="nw", text=line or " ",
+                    fill=TEXT if line else MUTED, font=text_font,
+                    width=400, tags=tag
+                )
+
+                found = box.bbox(tag)
+
+                y = (found[3] if found else y + 18) + 3
+
+            total = y - 3 + pad_y
+
+            box.configure(height=total)
+
+            keep = []
+
+            def paint(_event=None):
+
+                try:
+
+                    w = max(box.winfo_width(), 120)
+
+                    big = Image.new(
+                        "RGBA", (w * 4, total * 4), (0, 0, 0, 0)
+                    )
+
+                    ImageDraw.Draw(big).rounded_rectangle(
+                        [0, 0, w * 4 - 1, total * 4 - 1],
+                        radius=radius * 4, fill=PANEL_2
+                    )
+
+                    base = ImageTk.PhotoImage(
+                        big.resize((w, total), Image.LANCZOS)
+                    )
+
+                    edge = ImageTk.PhotoImage(
+                        _edge_stripe_image(accent, total, radius)
+                    )
+
+                    keep[:] = [base, edge]
+
+                    box.delete("shape")
+
+                    box.create_image(
+                        0, 0, anchor="nw", image=base, tags="shape"
+                    )
+
+                    box.create_image(
+                        0, 0, anchor="nw", image=edge, tags="shape"
+                    )
+
+                    box.tag_lower("shape")
+
+                except Exception:
+                    pass
+
+            box.bind("<Configure>", paint)
+
+            paint()
 
         bar = tk.Frame(shell["foot"], bg=BG)
 
@@ -36098,6 +36574,10 @@ class StudesticsApp(tk.Tk):
                 elif isinstance(action, tuple) and action[0] == "menu":
                     self.show_tray_menu(action[1], action[2])
 
+                elif action == "restart":
+                    self.restart_app()
+                    return
+
                 elif action == "quit":
                     self.quit_app()
                     return
@@ -36199,29 +36679,35 @@ class StudesticsApp(tk.Tk):
             except Exception:
                 pass
 
+        tray_labels = [
+            "Open Studestics",
+            "Floating clock: Off  ",
+            "Restart", "Quit"
+        ]
+
+        tray_w = max(
+            200,
+            max(
+                tkfont.Font(
+                    family=UI_FONT, size=10, weight="bold"
+                ).measure(t)
+                for t in tray_labels
+            ) + 48
+        )
+
         def add(text, command, bold=False, colour=TEXT):
 
-            row = tk.Label(
-                inner,
-                text=text,
-                bg=PANEL,
-                fg=colour,
-                font=(UI_FONT, 10, "bold" if bold else "normal"),
-                anchor="w",
-                padx=14,
-                pady=8,
-                cursor="hand2"
-            )
-
-            row.pack(fill="x", padx=6, pady=1)
-
-            row.bind("<Enter>", lambda e: row.configure(bg=HOVER_BG))
-            row.bind("<Leave>", lambda e: row.configure(bg=PANEL))
-
-            row.bind(
-                "<ButtonRelease-1>",
-                lambda e: (close(), command())
-            )
+            self._menu_row(
+                inner, PANEL,
+                [(
+                    text,
+                    (UI_FONT, 10, "bold" if bold else "normal"),
+                    colour, 18
+                )],
+                [],
+                lambda: (close(), command()),
+                height=36, width=tray_w
+            ).pack(fill="x", padx=6, pady=1)
 
         tk.Frame(inner, bg=PANEL, height=5).pack()
 
@@ -36232,6 +36718,8 @@ class StudesticsApp(tk.Tk):
             else "Floating clock: Off",
             self.toggle_float
         )
+
+        add("Restart", self.restart_app)
 
         tk.Frame(inner, bg=BORDER, height=1).pack(
             fill="x", padx=14, pady=4
@@ -36357,6 +36845,10 @@ class StudesticsApp(tk.Tk):
                         else "Floating clock: Off"
                     ),
                     lambda icon, item: self._tray_queue.put("float")
+                ),
+                pystray.MenuItem(
+                    "Restart",
+                    lambda icon, item: self._tray_queue.put("restart")
                 ),
                 pystray.MenuItem(
                     "Quit",
