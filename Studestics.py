@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.9"
+VERSION = "1.6.95"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -86,6 +86,75 @@ ATTACH_DIR = APP_DIR / "attachments"
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
 ATTACH_DIR.mkdir(parents=True, exist_ok=True)
+
+# Fonts the user added (.ttf / .otf files) live here.
+FONTS_DIR = APP_DIR / "fonts"
+FONTS_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_FONT = "Segoe UI"
+
+
+def register_font_file(path):
+    """Makes a font file usable by this app only (nothing is installed
+    on the computer). Returns True when Windows accepted it."""
+
+    try:
+
+        import ctypes
+
+        # 0x10 = FR_PRIVATE: visible to this process only.
+        added = ctypes.windll.gdi32.AddFontResourceExW(
+            str(path), 0x10, 0
+        )
+
+        return added > 0
+
+    except Exception:
+        return False
+
+
+def _early_ui_font():
+    """The chosen UI font, read straight from the settings table before
+    anything is drawn, with any added font files registered first."""
+
+    chosen = DEFAULT_FONT
+
+    try:
+
+        import json
+        import sqlite3
+
+        connection = sqlite3.connect(str(DB_PATH))
+
+        def setting(key):
+
+            row = connection.execute(
+                "SELECT value FROM settings WHERE key=?", (key,)
+            ).fetchone()
+
+            return row[0] if row else None
+
+        try:
+
+            for entry in json.loads(setting("custom_fonts") or "[]"):
+
+                file = FONTS_DIR / str(entry.get("file", ""))
+
+                if file.is_file():
+                    register_font_file(file)
+
+            chosen = setting("ui_font") or DEFAULT_FONT
+
+        finally:
+            connection.close()
+
+    except Exception:
+        pass
+
+    return chosen
+
+
+UI_FONT = _early_ui_font()
 
 
 # ============================================================
@@ -1936,7 +2005,7 @@ class NavItem:
                 text=self.name,
                 anchor="w",
                 fill=text,
-                font=("Segoe UI", 13, "bold" if self.active else "normal")
+                font=(UI_FONT, 13, "bold" if self.active else "normal")
             )
 
         except Exception:
@@ -4360,7 +4429,7 @@ class RoundedButton:
         # lines as it needs (used for long quiz answers).
         self.wrap = 0
 
-        self.font = tkfont.Font(family="Segoe UI", size=10)
+        self.font = tkfont.Font(family=UI_FONT, size=10)
 
         try:
             parent_bg = parent.cget("bg")
@@ -6002,9 +6071,9 @@ class StudesticsApp(tk.Tk):
             if state is None:
 
                 title_font = tkfont.Font(
-                    family="Segoe UI", size=34, weight="bold"
+                    family=UI_FONT, size=34, weight="bold"
                 )
-                sub_font = tkfont.Font(family="Segoe UI", size=11)
+                sub_font = tkfont.Font(family=UI_FONT, size=11)
 
                 state = self._splash_state = {
                     "size": (width, height),
@@ -6222,7 +6291,7 @@ class StudesticsApp(tk.Tk):
             text="Studestics",
             bg=SIDEBAR,
             fg=TEXT,
-            font=("Segoe UI", 16, "bold")
+            font=(UI_FONT, 16, "bold")
         ).pack(
             side="left",
             padx=(10, 0)
@@ -6426,7 +6495,7 @@ class StudesticsApp(tk.Tk):
             text="Starting...",
             bg=SIDEBAR,
             fg=TEXT,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             anchor="w"
         )
 
@@ -6439,7 +6508,7 @@ class StudesticsApp(tk.Tk):
             text="View profile",
             bg=SIDEBAR,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             anchor="w"
         )
 
@@ -6622,7 +6691,7 @@ class StudesticsApp(tk.Tk):
             text="Starting...",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         self.startup_error = tk.Label(
@@ -6630,7 +6699,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=RED,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=650
         )
 
@@ -7036,7 +7105,7 @@ class StudesticsApp(tk.Tk):
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=PURPLE,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         )
 
     def make_title_box(self, parent):
@@ -7059,7 +7128,7 @@ class StudesticsApp(tk.Tk):
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=PURPLE,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         )
 
         self.emoji_attach(box)
@@ -7139,7 +7208,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 25, "bold")
+            font=(UI_FONT, 25, "bold")
         ).pack(
             anchor="w"
         )
@@ -7151,7 +7220,7 @@ class StudesticsApp(tk.Tk):
                 text=subtitle,
                 bg=BG,
                 fg=MUTED,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             ).pack(
                 anchor="w",
                 pady=(4, 0)
@@ -7182,7 +7251,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=parent.cget("bg"),
             fg=TEXT,
-            font=("Segoe UI", 14, "bold")
+            font=(UI_FONT, 14, "bold")
         ).pack(
             anchor="w"
         )
@@ -7194,7 +7263,7 @@ class StudesticsApp(tk.Tk):
                 text=subtitle,
                 bg=parent.cget("bg"),
                 fg=MUTED,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(
                 anchor="w",
                 pady=(2, 0)
@@ -7211,7 +7280,7 @@ class StudesticsApp(tk.Tk):
             text=text,
             bg=parent.cget("bg"),
             fg=MUTED_2,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(
             anchor="w",
             padx=20,
@@ -7548,7 +7617,7 @@ class StudesticsApp(tk.Tk):
                 size / 2,
                 text=letter,
                 fill="#FFFFFF",
-                font=("Segoe UI", -int(size * 0.46), "bold"),
+                font=(UI_FONT, -int(size * 0.46), "bold"),
                 tags="letter"
             )
 
@@ -7632,7 +7701,7 @@ class StudesticsApp(tk.Tk):
             text=label,
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             anchor="w"
         )
@@ -7642,7 +7711,7 @@ class StudesticsApp(tk.Tk):
             text=value,
             bg=PANEL,
             fg=color or TEXT,
-            font=("Segoe UI", 26, "bold")
+            font=(UI_FONT, 26, "bold")
         ).pack(
             anchor="w",
             pady=(2, 0)
@@ -7665,8 +7734,8 @@ class StudesticsApp(tk.Tk):
 
         canvas.grid(row=0, column=column, sticky="nsew", padx=6)
 
-        value_font = tkfont.Font(family="Segoe UI", size=24, weight="bold")
-        label_font = tkfont.Font(family="Segoe UI", size=9)
+        value_font = tkfont.Font(family=UI_FONT, size=24, weight="bold")
+        label_font = tkfont.Font(family=UI_FONT, size=9)
 
         def draw(event=None):
 
@@ -7754,7 +7823,7 @@ class StudesticsApp(tk.Tk):
     def _pill(self, parent, text, color):
         """A small rounded tag: tinted background, coloured text."""
 
-        font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        font = tkfont.Font(family=UI_FONT, size=9, weight="bold")
 
         w = font.measure(text) + 26
         h = 26
@@ -7821,7 +7890,7 @@ class StudesticsApp(tk.Tk):
             text=label,
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(
             anchor="w",
             padx=22,
@@ -7833,7 +7902,7 @@ class StudesticsApp(tk.Tk):
             text=value,
             bg=PANEL,
             fg=color,
-            font=("Segoe UI", 30, "bold")
+            font=(UI_FONT, 30, "bold")
         ).pack(
             anchor="w",
             padx=22
@@ -7844,7 +7913,7 @@ class StudesticsApp(tk.Tk):
             text=caption,
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             anchor="w",
             padx=22,
@@ -7866,7 +7935,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 12, "bold")
+            font=(UI_FONT, 12, "bold")
         ).pack(
             anchor="w",
             padx=20,
@@ -7969,7 +8038,7 @@ class StudesticsApp(tk.Tk):
             text=name,
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 26, "bold")
+            font=(UI_FONT, 26, "bold")
         )
 
         name_label.pack(side="left")
@@ -7992,7 +8061,7 @@ class StudesticsApp(tk.Tk):
                 text=f"Joined {joined}",
                 bg=PANEL,
                 fg=MUTED_2,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(
                 anchor="w",
                 pady=(2, 0)
@@ -8194,13 +8263,13 @@ class StudesticsApp(tk.Tk):
         head.pack(fill="x", padx=20, pady=(20, 12))
 
         head_title = tk.Label(
-            head, bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")
+            head, bg=PANEL, fg=TEXT, font=(UI_FONT, 14, "bold")
         )
 
         head_title.pack(anchor="w")
 
         head_sub = tk.Label(
-            head, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)
+            head, bg=PANEL, fg=MUTED, font=(UI_FONT, 9)
         )
 
         head_sub.pack(anchor="w", pady=(2, 0))
@@ -8281,7 +8350,7 @@ class StudesticsApp(tk.Tk):
             text="At a glance",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 12, "bold")
+            font=(UI_FONT, 12, "bold")
         ).pack(
             anchor="w",
             padx=22,
@@ -8330,7 +8399,7 @@ class StudesticsApp(tk.Tk):
                 text=label,
                 bg=PANEL,
                 fg=MUTED,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             ).pack(side="left")
 
             tk.Label(
@@ -8338,7 +8407,7 @@ class StudesticsApp(tk.Tk):
                 text=value,
                 bg=PANEL,
                 fg=color,
-                font=("Segoe UI", 12, "bold")
+                font=(UI_FONT, 12, "bold")
             ).pack(side="right")
 
         tk.Frame(summary, bg=PANEL, height=14).pack()
@@ -8414,7 +8483,7 @@ class StudesticsApp(tk.Tk):
                 text="●",
                 bg=SIDEBAR,
                 fg=dot_color,
-                font=("Segoe UI", 8)
+                font=(UI_FONT, 8)
             )
 
         dot.pack(
@@ -8445,7 +8514,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=SIDEBAR,
             fg=NAV_TEXT,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             anchor="w"
         )
 
@@ -8511,7 +8580,7 @@ class StudesticsApp(tk.Tk):
                 text=tag,
                 bg=SIDEBAR,
                 fg=tag_color or MUTED_2,
-                font=("Segoe UI", 8),
+                font=(UI_FONT, 8),
                 anchor="w"
             )
 
@@ -8719,7 +8788,7 @@ class StudesticsApp(tk.Tk):
                 anchor="w",
                 text=time_text,
                 fill=TEXT,
-                font=("Segoe UI", 15, "bold")
+                font=(UI_FONT, 15, "bold")
             )
 
             card.create_text(
@@ -8727,7 +8796,7 @@ class StudesticsApp(tk.Tk):
                 anchor="e",
                 text=status,
                 fill=MUTED,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             )
 
         except Exception:
@@ -8954,7 +9023,7 @@ class StudesticsApp(tk.Tk):
                 text="TOP TASKS",
                 bg=SIDEBAR,
                 fg=BLUE,
-                font=("Segoe UI", 8, "bold")
+                font=(UI_FONT, 8, "bold")
             ).pack(
                 anchor="w",
                 pady=(0, 6)
@@ -8980,7 +9049,7 @@ class StudesticsApp(tk.Tk):
                 text="ACTIVE GOALS",
                 bg=SIDEBAR,
                 fg=PURPLE_HOVER,
-                font=("Segoe UI", 8, "bold")
+                font=(UI_FONT, 8, "bold")
             ).pack(
                 anchor="w",
                 pady=(12 if top_tasks else 0, 6)
@@ -9148,7 +9217,7 @@ class StudesticsApp(tk.Tk):
 
         tasks = self.db.get_tasks(
             False
-        )[:7]
+        )[:20]
 
         if not tasks:
 
@@ -9160,10 +9229,12 @@ class StudesticsApp(tk.Tk):
                 self.new_task_dialog
             )
 
+        task_list = self._scroll_area(left) if tasks else left
+
         for task in tasks:
 
             self.dashboard_task(
-                left,
+                task_list,
                 task
             )
 
@@ -9175,7 +9246,7 @@ class StudesticsApp(tk.Tk):
 
         active_goals = self.db.get_goals(
             True
-        )[:7]
+        )[:20]
 
         if not active_goals:
 
@@ -9187,10 +9258,12 @@ class StudesticsApp(tk.Tk):
                 self.new_goal_dialog
             )
 
+        goal_list = self._scroll_area(right) if active_goals else right
+
         for goal in active_goals:
 
             row = tk.Frame(
-                right,
+                goal_list,
                 bg=PANEL
             )
 
@@ -9205,7 +9278,7 @@ class StudesticsApp(tk.Tk):
                 text="●",
                 bg=PANEL,
                 fg=PURPLE_HOVER,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(
                 side="left"
             )
@@ -9215,11 +9288,142 @@ class StudesticsApp(tk.Tk):
                 text=goal["title"],
                 bg=PANEL,
                 fg=TEXT,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             ).pack(
                 side="left",
                 padx=10
             )
+
+    def _scroll_area(self, parent, bg=PANEL):
+        """A list area that scrolls with the mouse wheel when its
+        content is taller than the space (with a thin bar showing where
+        you are). Returns the frame to put the rows in."""
+
+        wrap = tk.Frame(parent, bg=bg)
+
+        wrap.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(
+            wrap, bg=bg, highlightthickness=0, bd=0,
+            yscrollincrement=18
+        )
+
+        canvas.pack(fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=bg)
+
+        window_id = canvas.create_window(
+            0, 0, anchor="nw", window=inner
+        )
+
+        bar = canvas.create_rectangle(
+            0, 0, 0, 0, fill=BORDER, outline="", state="hidden"
+        )
+
+        def fix_bar(*_):
+
+            try:
+
+                first, last = canvas.yview()
+
+                if last - first >= 0.999:
+
+                    canvas.itemconfigure(bar, state="hidden")
+
+                    return
+
+                height = canvas.winfo_height()
+                width = canvas.winfo_width()
+
+                top = canvas.canvasy(0)
+
+                canvas.coords(
+                    bar,
+                    width - 6, top + first * height + 2,
+                    width - 3, top + last * height - 2
+                )
+
+                canvas.itemconfigure(bar, state="normal")
+
+            except Exception:
+                pass
+
+        canvas.configure(yscrollcommand=lambda *a: fix_bar())
+
+        def layout(_event=None):
+
+            try:
+
+                width = canvas.winfo_width()
+
+                canvas.itemconfigure(window_id, width=width)
+
+                canvas.configure(
+                    scrollregion=(
+                        0, 0, width,
+                        max(inner.winfo_reqheight(), canvas.winfo_height())
+                    )
+                )
+
+                fix_bar()
+
+            except Exception:
+                pass
+
+        canvas.bind("<Configure>", layout)
+        inner.bind("<Configure>", layout)
+
+        targets = getattr(self, "_wheel_targets", None)
+
+        if targets is None:
+
+            targets = self._wheel_targets = []
+
+            def on_wheel(event):
+
+                try:
+
+                    under = self.winfo_containing(
+                        event.x_root, event.y_root
+                    )
+
+                except Exception:
+                    return
+
+                for target in list(targets):
+
+                    try:
+
+                        if not target.winfo_exists():
+                            targets.remove(target)
+                            continue
+
+                    except Exception:
+                        targets.remove(target)
+                        continue
+
+                    widget = under
+
+                    while widget is not None and widget is not target:
+                        widget = widget.master
+
+                    if widget is target:
+
+                        first, last = target.yview()
+
+                        if last - first < 0.999:
+
+                            target.yview_scroll(
+                                int(-event.delta / 120) * 2, "units"
+                            )
+
+                        return
+
+            self.bind_all("<MouseWheel>", on_wheel, add="+")
+
+        targets.append(canvas)
+
+        return inner
 
     def dashboard_empty_state(
         self,
@@ -9254,7 +9458,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack()
 
         tk.Label(
@@ -9262,7 +9466,7 @@ class StudesticsApp(tk.Tk):
             text=subtitle,
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=240,
             justify="center"
         ).pack(
@@ -9521,7 +9725,7 @@ class StudesticsApp(tk.Tk):
 
         target_label = tk.Label(
             top, text="Daily focus target", bg=PANEL, fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         target_label.pack(side="left")
@@ -9531,7 +9735,7 @@ class StudesticsApp(tk.Tk):
             text=f"{streak} day streak",
             bg=PANEL,
             fg=YELLOW if streak else MUTED_2,
-            font=("Segoe UI", 10, "bold")
+            font=(UI_FONT, 10, "bold")
         ).pack(side="right")
 
         mid = tk.Frame(body, bg=PANEL)
@@ -9539,7 +9743,7 @@ class StudesticsApp(tk.Tk):
         mid.pack(fill="x", padx=18, pady=(2, 0))
 
         value = tk.Label(
-            mid, bg=PANEL, font=("Segoe UI", 20, "bold")
+            mid, bg=PANEL, font=(UI_FONT, 20, "bold")
         )
 
         value.pack(side="left")
@@ -9643,7 +9847,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             anchor="w",
             padx=18,
@@ -9655,7 +9859,7 @@ class StudesticsApp(tk.Tk):
             text=str(value),
             bg=PANEL,
             fg=color,
-            font=("Segoe UI", 25, "bold")
+            font=(UI_FONT, 25, "bold")
         ).pack(
             anchor="w",
             padx=18,
@@ -9686,7 +9890,7 @@ class StudesticsApp(tk.Tk):
             fg=priority_color(
                 task["priority"]
             ),
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(
             side="left"
         )
@@ -9708,7 +9912,7 @@ class StudesticsApp(tk.Tk):
             text=task["title"],
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             anchor="w"
         ).pack(
             fill="x"
@@ -9721,7 +9925,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             anchor="w"
         ).pack(
             fill="x"
@@ -9755,7 +9959,7 @@ class StudesticsApp(tk.Tk):
             text="Next reminder",
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(side="left", padx=(0, 10))
 
         labels = {}
@@ -9771,7 +9975,7 @@ class StudesticsApp(tk.Tk):
                     bg=PURPLE,
                     width=1,
                     height=18
-                ).pack(side="left", padx=12)
+                ).pack(side="left", padx=16)
 
             box = tk.Frame(strip, bg=BG)
 
@@ -9782,9 +9986,7 @@ class StudesticsApp(tk.Tk):
                 text=name,
                 bg=BG,
                 fg=color,
-                font=("Segoe UI", 10, "bold"),
-                width=8,
-                anchor="w"
+                font=(UI_FONT, 10, "bold")
             ).pack(side="left")
 
             value = tk.Label(
@@ -9792,12 +9994,10 @@ class StudesticsApp(tk.Tk):
                 text="NULL",
                 bg=BG,
                 fg=TEXT,
-                font=("Segoe UI", 10),
-                width=7,
-                anchor="w"
+                font=(UI_FONT, 10)
             )
 
-            value.pack(side="left")
+            value.pack(side="left", padx=(10, 0))
 
             labels[name] = value
 
@@ -10050,7 +10250,7 @@ class StudesticsApp(tk.Tk):
                     ),
                     bg=PANEL,
                     fg=MUTED_2,
-                    font=("Segoe UI", 12)
+                    font=(UI_FONT, 12)
                 ).place(
                     relx=0.5,
                     rely=0.5,
@@ -10131,7 +10331,7 @@ class StudesticsApp(tk.Tk):
                     text=f"Page {self.tasks_page + 1} of {pages}",
                     bg=PANEL,
                     fg=MUTED,
-                    font=("Segoe UI", 9)
+                    font=(UI_FONT, 9)
                 ).pack(
                     side="left",
                     padx=10
@@ -10325,7 +10525,7 @@ class StudesticsApp(tk.Tk):
                 if task["status"] == "Completed"
                 else TEXT
             ),
-            font=("Segoe UI", 11, "bold"),
+            font=(UI_FONT, 11, "bold"),
             anchor="w"
         ).pack(
             fill="x"
@@ -10338,7 +10538,7 @@ class StudesticsApp(tk.Tk):
                 text=task["description"],
                 bg=bg,
                 fg=MUTED,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 wraplength=650,
                 justify="left",
                 anchor="w"
@@ -10372,7 +10572,7 @@ class StudesticsApp(tk.Tk):
             fg=priority_color(
                 task["priority"]
             ),
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(
             side="left"
         )
@@ -10384,7 +10584,7 @@ class StudesticsApp(tk.Tk):
                 text="  \u2022  " + due_text,
                 bg=bg,
                 fg=due_color,
-                font=("Segoe UI", 8, "bold")
+                font=(UI_FONT, 8, "bold")
             ).pack(
                 side="left"
             )
@@ -10941,9 +11141,9 @@ class StudesticsApp(tk.Tk):
             }
         ]
 
-        label_font = tkfont.Font(family="Segoe UI", size=10)
-        title_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
-        small_font = tkfont.Font(family="Segoe UI", size=9)
+        label_font = tkfont.Font(family=UI_FONT, size=10)
+        title_font = tkfont.Font(family=UI_FONT, size=12, weight="bold")
+        small_font = tkfont.Font(family=UI_FONT, size=9)
 
         pill_w = max(
             max(label_font.measure(a["label"]) for a in actions) + 44,
@@ -11096,7 +11296,7 @@ class StudesticsApp(tk.Tk):
                 for size in range(11, 7, -1):
 
                     shown_font = tkfont.Font(
-                        family="Segoe UI", size=size, weight="bold"
+                        family=UI_FONT, size=size, weight="bold"
                     )
 
                     if shown_font.measure(shown_title) <= title_room:
@@ -11535,7 +11735,7 @@ class StudesticsApp(tk.Tk):
             fg=TEXT,
             insertbackground=TEXT,
             relief="flat",
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         )
 
         description.pack(
@@ -11661,7 +11861,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(
             anchor="w",
             pady=(0, 12)
@@ -11796,7 +11996,7 @@ class StudesticsApp(tk.Tk):
             text="One-time reminder",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             cursor="hand2"
         )
 
@@ -11809,7 +12009,7 @@ class StudesticsApp(tk.Tk):
             text="Remind me once, at the deadline above",
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(side="left", padx=(12, 0))
 
         try:
@@ -11889,7 +12089,7 @@ class StudesticsApp(tk.Tk):
             textvariable=selected_name,
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         name_label.pack(
@@ -12105,7 +12305,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 13, "bold"),
+            font=(UI_FONT, 13, "bold"),
             anchor="w"
         )
 
@@ -12116,7 +12316,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             anchor="w"
         )
 
@@ -12130,21 +12330,21 @@ class StudesticsApp(tk.Tk):
                 CW / 2, HEAD / 2 + 2,
                 text=f"{_calendar.month_name[state.month]} {state.year}",
                 fill=TEXT,
-                font=("Segoe UI", 11, "bold")
+                font=(UI_FONT, 11, "bold")
             )
 
             cal.create_text(
                 22, HEAD / 2 + 1,
                 text="\u2039",
                 fill=MUTED,
-                font=("Segoe UI", 18)
+                font=(UI_FONT, 18)
             )
 
             cal.create_text(
                 CW - 22, HEAD / 2 + 1,
                 text="\u203a",
                 fill=MUTED,
-                font=("Segoe UI", 18)
+                font=(UI_FONT, 18)
             )
 
             for i, letter in enumerate("MTWTFSS"):
@@ -12153,7 +12353,7 @@ class StudesticsApp(tk.Tk):
                     i * CELL + CELL / 2, 44,
                     text=letter,
                     fill=MUTED_2,
-                    font=("Segoe UI", 8, "bold")
+                    font=(UI_FONT, 8, "bold")
                 )
 
             chosen = state.sel.date() if state.sel else None
@@ -12193,7 +12393,7 @@ class StudesticsApp(tk.Tk):
                         cx, cy,
                         text=str(number),
                         fill=color,
-                        font=("Segoe UI", 10, weight)
+                        font=(UI_FONT, 10, weight)
                     )
 
             line1, line2 = state.readout()
@@ -12410,7 +12610,7 @@ class StudesticsApp(tk.Tk):
             text=":",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 13, "bold")
+            font=(UI_FONT, 13, "bold")
         ).pack(side="left", padx=4)
 
         minute_box, minute_entry = clock_box(
@@ -12499,7 +12699,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             window, text="Choose the part to show",
-            bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold")
+            bg=BG, fg=TEXT, font=(UI_FONT, 14, "bold")
         ).pack(anchor="w", padx=28, pady=(18, 2))
 
         tk.Label(
@@ -12937,15 +13137,8 @@ class StudesticsApp(tk.Tk):
                     text=empty_message,
                     bg=PANEL,
                     fg=MUTED_2,
-                    font=("Segoe UI", 10)
-                ).grid(
-                    row=0,
-                    column=0,
-                    columnspan=columns,
-                    sticky="w",
-                    padx=12,
-                    pady=12
-                )
+                    font=(UI_FONT, 10)
+                ).place(relx=0.5, rely=0.45, anchor="center")
 
             start = page * page_size
 
@@ -13002,7 +13195,7 @@ class StudesticsApp(tk.Tk):
                     text=f"Page {page + 1} of {pages}",
                     bg=PANEL,
                     fg=MUTED,
-                    font=("Segoe UI", 9)
+                    font=(UI_FONT, 9)
                 ).pack(side="left", padx=10)
 
                 arrow("›", 1, page < pages - 1)
@@ -13109,7 +13302,7 @@ class StudesticsApp(tk.Tk):
             text=goal["title"],
             bg=PANEL_2,
             fg=TEXT if goal["active"] else MUTED,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w", padx=14, pady=(12, 2))
 
         tk.Label(
@@ -13117,7 +13310,7 @@ class StudesticsApp(tk.Tk):
             text="Active" if goal["active"] else "Paused",
             bg=PANEL_2,
             fg=PURPLE_HOVER if goal["active"] else MUTED_2,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(anchor="w", padx=14)
 
         row = tk.Frame(card, bg=PANEL_2)
@@ -13210,9 +13403,9 @@ class StudesticsApp(tk.Tk):
             }
         ]
 
-        label_font = tkfont.Font(family="Segoe UI", size=10)
-        title_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
-        small_font = tkfont.Font(family="Segoe UI", size=9)
+        label_font = tkfont.Font(family=UI_FONT, size=10)
+        title_font = tkfont.Font(family=UI_FONT, size=12, weight="bold")
+        small_font = tkfont.Font(family=UI_FONT, size=9)
 
         pill_w = max(
             max(label_font.measure(a["label"]) for a in actions) + 44,
@@ -13341,7 +13534,7 @@ class StudesticsApp(tk.Tk):
                 for size in range(11, 7, -1):
 
                     trial = tkfont.Font(
-                        family="Segoe UI", size=size, weight="bold"
+                        family=UI_FONT, size=size, weight="bold"
                     )
 
                     shown_font = trial
@@ -13671,7 +13864,7 @@ class StudesticsApp(tk.Tk):
             fg=TEXT,
             insertbackground=TEXT,
             relief="flat",
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         )
 
         description.pack(
@@ -13734,7 +13927,7 @@ class StudesticsApp(tk.Tk):
             textvariable=selected_name,
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         name_label.pack(
@@ -14023,7 +14216,7 @@ class StudesticsApp(tk.Tk):
                 text=text,
                 bg=BG,
                 fg=colour,
-                font=("Segoe UI", size, "bold" if bold else "normal"),
+                font=(UI_FONT, size, "bold" if bold else "normal"),
                 wraplength=540,
                 justify="left",
                 **kw
@@ -14071,7 +14264,7 @@ class StudesticsApp(tk.Tk):
                 body,
                 bg=BG,
                 fg=PURPLE_HOVER,
-                font=("Segoe UI", 40, "bold")
+                font=(UI_FONT, 40, "bold")
             )
 
             number.pack(pady=(22, 0))
@@ -14080,7 +14273,7 @@ class StudesticsApp(tk.Tk):
                 body,
                 bg=BG,
                 fg=MUTED,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             )
 
             caption.pack()
@@ -14193,12 +14386,12 @@ class StudesticsApp(tk.Tk):
 
             tk.Label(
                 ends, text="1", bg=BG, fg=MUTED_2,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(side="left")
 
             tk.Label(
                 ends, text="50", bg=BG, fg=MUTED_2,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(side="right")
 
             row = tk.Frame(body, bg=BG)
@@ -14284,7 +14477,7 @@ class StudesticsApp(tk.Tk):
                 text="",
                 bg=BG,
                 fg=GREEN,
-                font=("Segoe UI", 10, "bold"),
+                font=(UI_FONT, 10, "bold"),
                 wraplength=540,
                 justify="left"
             )
@@ -14294,7 +14487,7 @@ class StudesticsApp(tk.Tk):
                 text="",
                 bg=BG,
                 fg=MUTED,
-                font=("Segoe UI", 10),
+                font=(UI_FONT, 10),
                 wraplength=540,
                 justify="left"
             )
@@ -14593,7 +14786,7 @@ class StudesticsApp(tk.Tk):
 
         strip.pack(fill="x")
 
-        tab_font = tkfont.Font(family="Segoe UI", size=10)
+        tab_font = tkfont.Font(family=UI_FONT, size=10)
 
         tab_state = {
             "hover": None, "close_hover": False, "plus_hover": False,
@@ -14653,7 +14846,7 @@ class StudesticsApp(tk.Tk):
             textvariable=status_var,
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(side="left")
 
         def tab_name(tab):
@@ -15605,7 +15798,7 @@ class StudesticsApp(tk.Tk):
             textvariable=state_var,
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         state_label.pack(side="right")
@@ -15615,7 +15808,7 @@ class StudesticsApp(tk.Tk):
             textvariable=name_var,
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 10, "bold")
+            font=(UI_FONT, 10, "bold")
         ).pack(side="right", padx=(0, 12))
 
         editor.bind("<<Modified>>", on_modified)
@@ -15805,7 +15998,7 @@ class StudesticsApp(tk.Tk):
                 text=heading,
                 bg=PANEL,
                 fg=TEXT,
-                font=("Segoe UI", 13, "bold")
+                font=(UI_FONT, 13, "bold")
             ).pack(anchor="w")
 
             # Turn the whole day's schedule (its reminders) on or off.
@@ -15820,7 +16013,7 @@ class StudesticsApp(tk.Tk):
                 text="Schedule on" if not day_off else "Schedule off",
                 bg=PANEL,
                 fg=MUTED if not day_off else MUTED_2,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(side="left", padx=(0, 10))
 
             def toggle_day(value, key=str(shown)):
@@ -15859,7 +16052,7 @@ class StudesticsApp(tk.Tk):
                 text=count_text,
                 bg=PANEL,
                 fg=MUTED_2 if not day_off else YELLOW,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(anchor="w", pady=(2, 0))
 
             if not blocks:
@@ -15972,7 +16165,7 @@ class StudesticsApp(tk.Tk):
                     ),
                     bg=PANEL_2,
                     fg=TEXT,
-                    font=("Segoe UI", 11, "bold"),
+                    font=(UI_FONT, 11, "bold"),
                     width=19,
                     anchor="w"
                 ).pack(side="left", padx=(16, 8), pady=16)
@@ -16045,7 +16238,7 @@ class StudesticsApp(tk.Tk):
                         text="NOW" if running else "NEXT",
                         bg=GREEN if running else PURPLE,
                         fg="#07140B" if running else "#FFFFFF",
-                        font=("Segoe UI", 8, "bold"),
+                        font=(UI_FONT, 8, "bold"),
                         padx=9,
                         pady=2
                     ).pack(side="right", padx=(0, 4))
@@ -16504,7 +16697,7 @@ class StudesticsApp(tk.Tk):
             text="Click AM / PM to flip  ·  ↑ ↓ ±15 min",
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(side="left", padx=14)
 
         lengths = tk.Frame(form, bg=BG)
@@ -17076,7 +17269,7 @@ class StudesticsApp(tk.Tk):
 
                 tk.Label(
                     body, text=f"+ {len(blocks) - 4} more", bg=BG,
-                    fg=MUTED_2, font=("Segoe UI", 9)
+                    fg=MUTED_2, font=(UI_FONT, 9)
                 ).pack(anchor="w", pady=(4, 0))
 
         # What comes after, so the day has a shape.
@@ -17103,7 +17296,7 @@ class StudesticsApp(tk.Tk):
                         f"After this:  {format_clock(nxt['start_min'])}"
                         f"   {nxt['title']}"
                     ),
-                    bg=BG, fg=MUTED_2, font=("Segoe UI", 9), anchor="w"
+                    bg=BG, fg=MUTED_2, font=(UI_FONT, 9), anchor="w"
                 ).pack(anchor="w", pady=(6, 0))
 
         except Exception:
@@ -17354,7 +17547,7 @@ class StudesticsApp(tk.Tk):
                 tx, ty,
                 text=self.focus_time_text(),
                 fill=TEXT,
-                font=("Segoe UI", -tpx, "bold")
+                font=(UI_FONT, -tpx, "bold")
             )
         )
 
@@ -17364,7 +17557,7 @@ class StudesticsApp(tk.Tk):
                 sx, sy,
                 text="Ready",
                 fill=MUTED,
-                font=("Segoe UI", -spx)
+                font=(UI_FONT, -spx)
             )
         )
 
@@ -17511,7 +17704,7 @@ class StudesticsApp(tk.Tk):
             text="min",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             side="left",
             padx=(6, 12)
@@ -17538,7 +17731,7 @@ class StudesticsApp(tk.Tk):
             text="sec",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             side="left",
             padx=(6, 12)
@@ -17618,7 +17811,7 @@ class StudesticsApp(tk.Tk):
             text="Space  start / pause     R  reset",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(pady=(0, 24))
 
         # Made before the drawer, so the drawer slides over them.
@@ -17786,14 +17979,14 @@ class StudesticsApp(tk.Tk):
             size / 2, size / 2 - 6,
             text="00:00",
             fill=TEXT,
-            font=("Segoe UI", -56, "bold")
+            font=(UI_FONT, -56, "bold")
         )
 
         sub_item = canvas.create_text(
             size / 2, size / 2 + 44,
             text=".00",
             fill=MUTED,
-            font=("Segoe UI", -22)
+            font=(UI_FONT, -22)
         )
 
         def draw_ring(fraction, running):
@@ -17863,7 +18056,7 @@ class StudesticsApp(tk.Tk):
 
             tk.Label(
                 header, text=text, bg=PANEL, fg=MUTED_2,
-                font=("Segoe UI", 8, "bold")
+                font=(UI_FONT, 8, "bold")
             ).place(x=x, rely=0.5, anchor=anchor)
 
         tk.Frame(laps_box, bg=BORDER, height=1).pack(fill="x")
@@ -17983,21 +18176,21 @@ class StudesticsApp(tk.Tk):
 
                 tk.Label(
                     row, text=f"Lap {number}", bg=PANEL, fg=MUTED,
-                    font=("Segoe UI", 10)
+                    font=(UI_FONT, 10)
                 ).place(x=14, rely=0.5, anchor="w")
 
                 tk.Label(
                     row,
                     text="".join(self._stopwatch_text(split)),
                     bg=PANEL, fg=split_color,
-                    font=("Segoe UI", 11, "bold")
+                    font=(UI_FONT, 11, "bold")
                 ).place(x=150, rely=0.5, anchor="center")
 
                 tk.Label(
                     row,
                     text="".join(self._stopwatch_text(laps[number - 1])),
                     bg=PANEL, fg=MUTED,
-                    font=("Segoe UI", 10)
+                    font=(UI_FONT, 10)
                 ).place(x=LIST_W - 22, rely=0.5, anchor="e")
 
                 for widget in [row] + list(row.winfo_children()):
@@ -18153,7 +18346,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=PANEL,
             fg=YELLOW,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         note.pack(pady=(10, 0))
@@ -18163,7 +18356,7 @@ class StudesticsApp(tk.Tk):
             text="Space  start / pause     L  lap     R  reset",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(pady=(2, 0))
 
         show_laps()
@@ -18724,7 +18917,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             win, text="FOCUS MODE", bg=BG, fg=PURPLE,
-            font=("Segoe UI", 9, "bold")
+            font=(UI_FONT, 9, "bold")
         ).pack(anchor="w", padx=28, pady=(20, 0))
 
         self._glow_heading(
@@ -18762,7 +18955,7 @@ class StudesticsApp(tk.Tk):
                 text="No pending tasks — add one first.",
                 bg=BG,
                 fg=MUTED_2,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             ).pack(
                 anchor="w",
                 padx=28
@@ -18874,7 +19067,7 @@ class StudesticsApp(tk.Tk):
                 text=f"+ {extra} more (complete some to see them)",
                 bg=BG,
                 fg=MUTED_2,
-                font=("Segoe UI", 9)
+                font=(UI_FONT, 9)
             ).pack(
                 anchor="w",
                 padx=30,
@@ -19148,7 +19341,7 @@ class StudesticsApp(tk.Tk):
                     19, 19,
                     text="≡",
                     fill=color,
-                    font=("Segoe UI", 16)
+                    font=(UI_FONT, 16)
                 )
 
         except Exception:
@@ -19195,7 +19388,7 @@ class StudesticsApp(tk.Tk):
                     12, 32,
                     text="›",
                     fill=color,
-                    font=("Segoe UI", 20)
+                    font=(UI_FONT, 20)
                 )
 
         except Exception:
@@ -19343,7 +19536,7 @@ class StudesticsApp(tk.Tk):
                 text="Words being watched",
                 bg=SIDEBAR,
                 fg=TEXT,
-                font=("Segoe UI", 11, "bold")
+                font=(UI_FONT, 11, "bold")
             ).pack(
                 anchor="w"
             )
@@ -19367,7 +19560,7 @@ class StudesticsApp(tk.Tk):
                 text=hint,
                 bg=SIDEBAR,
                 fg=YELLOW if not self.nudge_on else MUTED_2,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 wraplength=FOCUS_DRAWER_WIDTH - 60,
                 justify="left"
             ).pack(
@@ -19379,7 +19572,7 @@ class StudesticsApp(tk.Tk):
 
             shown = words[:limit]
 
-            font = tkfont.Font(family="Segoe UI", size=10)
+            font = tkfont.Font(family=UI_FONT, size=10)
 
             row = None
             used = 0
@@ -19417,7 +19610,7 @@ class StudesticsApp(tk.Tk):
                     text=f"+ {len(words) - limit} more",
                     bg=SIDEBAR,
                     fg=MUTED_2,
-                    font=("Segoe UI", 9)
+                    font=(UI_FONT, 9)
                 ).pack(
                     anchor="w",
                     pady=(2, 0)
@@ -19474,7 +19667,7 @@ class StudesticsApp(tk.Tk):
             text="Focus options",
             bg=SIDEBAR,
             fg=TEXT,
-            font=("Segoe UI", 14, "bold")
+            font=(UI_FONT, 14, "bold")
         ).pack(
             anchor="w",
             padx=(left, 20),
@@ -19486,7 +19679,7 @@ class StudesticsApp(tk.Tk):
             text="Change how the timer works.",
             bg=SIDEBAR,
             fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             anchor="w",
             padx=(left, 20),
@@ -19520,7 +19713,7 @@ class StudesticsApp(tk.Tk):
                 text=title,
                 bg=SIDEBAR,
                 fg=TEXT,
-                font=("Segoe UI", 11, "bold")
+                font=(UI_FONT, 11, "bold")
             ).pack(
                 side="left"
             )
@@ -19536,7 +19729,7 @@ class StudesticsApp(tk.Tk):
                     text=explain,
                     bg=SIDEBAR,
                     fg=MUTED,
-                    font=("Segoe UI", 9),
+                    font=(UI_FONT, 9),
                     wraplength=width - left - 28,
                     justify="left"
                 ).pack(
@@ -19620,7 +19813,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=SIDEBAR,
             fg=YELLOW,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=width - left - 28,
             justify="left"
         )
@@ -19786,7 +19979,7 @@ class StudesticsApp(tk.Tk):
                 oy + ty,
                 text=time_text,
                 fill=TEXT,
-                font=("Segoe UI", -tpx, "bold")
+                font=(UI_FONT, -tpx, "bold")
             )
 
             canvas.create_text(
@@ -19794,7 +19987,7 @@ class StudesticsApp(tk.Tk):
                 oy + sy,
                 text=status_text,
                 fill=MUTED,
-                font=("Segoe UI", -spx)
+                font=(UI_FONT, -spx)
             )
 
         else:
@@ -19813,7 +20006,7 @@ class StudesticsApp(tk.Tk):
                 center[1] - 6,
                 text=time_text,
                 fill=TEXT,
-                font=("Segoe UI", -26, "bold")
+                font=(UI_FONT, -26, "bold")
             )
 
             canvas.create_text(
@@ -19821,7 +20014,7 @@ class StudesticsApp(tk.Tk):
                 center[1] + 20,
                 text=status_text,
                 fill=MUTED,
-                font=("Segoe UI", -11)
+                font=(UI_FONT, -11)
             )
 
     def _float_close(self):
@@ -20168,7 +20361,7 @@ class StudesticsApp(tk.Tk):
                     19, 19,
                     text="▭" if self.float_on else "▫",
                     fill=color,
-                    font=("Segoe UI", 16)
+                    font=(UI_FONT, 16)
                 )
 
         except Exception:
@@ -20228,7 +20421,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=SIDEBAR,
             fg=TEXT,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             padx=10,
             pady=5,
             highlightthickness=1,
@@ -20355,7 +20548,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=SIDEBAR,
             fg=TEXT,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             padx=10,
             pady=5,
             highlightthickness=1,
@@ -20445,7 +20638,7 @@ class StudesticsApp(tk.Tk):
                         19, 19,
                         text="♪" if kind == "music" else "⛶",
                         fill=color,
-                        font=("Segoe UI", 16)
+                        font=(UI_FONT, 16)
                     )
 
             except Exception:
@@ -20670,21 +20863,21 @@ class StudesticsApp(tk.Tk):
             ox + tx, oy + ty,
             text="",
             fill=TEXT,
-            font=("Segoe UI", -tpx, "bold")
+            font=(UI_FONT, -tpx, "bold")
         )
 
         status_id = canvas.create_text(
             ox + sx, oy + sy,
             text="",
             fill=MUTED,
-            font=("Segoe UI", -spx)
+            font=(UI_FONT, -spx)
         )
 
         hint_id = canvas.create_text(
             cx, sh - 40,
             text="Space to pause or resume   |   F or Esc to leave",
             fill=MUTED_2,
-            font=("Segoe UI", -14)
+            font=(UI_FONT, -14)
         )
 
         def paint():
@@ -21103,7 +21296,7 @@ class StudesticsApp(tk.Tk):
                 anchor="nw",
                 text="Preview",
                 fill=MUTED_2,
-                font=("Segoe UI", -11)
+                font=(UI_FONT, -11)
             )
 
             self._round_preview_corners(canvas)
@@ -21637,7 +21830,7 @@ class StudesticsApp(tk.Tk):
             text="Back to it",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 18, "bold")
+            font=(UI_FONT, 18, "bold")
         ).pack(
             anchor="w",
             padx=28,
@@ -21663,7 +21856,7 @@ class StudesticsApp(tk.Tk):
             text=lines,
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             wraplength=400,
             justify="left"
         ).pack(
@@ -21761,7 +21954,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             box, text="Back to it", bg=BG, fg=TEXT,
-            font=("Segoe UI", 36, "bold")
+            font=(UI_FONT, 36, "bold")
         ).pack()
 
         tk.Label(
@@ -21770,13 +21963,13 @@ class StudesticsApp(tk.Tk):
                 f"That looks like {word.title()}, and your focus "
                 "timer is still running."
             ),
-            bg=BG, fg=MUTED, font=("Segoe UI", 14),
+            bg=BG, fg=MUTED, font=(UI_FONT, 14),
             wraplength=720, justify="center"
         ).pack(pady=(10, 0))
 
         clock = tk.Label(
             box, text=self.focus_time_text(), bg=BG, fg=PURPLE,
-            font=("Segoe UI", 48, "bold")
+            font=(UI_FONT, 48, "bold")
         )
 
         clock.pack(pady=(24, 0))
@@ -21790,7 +21983,7 @@ class StudesticsApp(tk.Tk):
 
             tk.Label(
                 box, text=f'Still on: "{label}"', bg=BG, fg=TEXT,
-                font=("Segoe UI", 13)
+                font=(UI_FONT, 13)
             ).pack(pady=(4, 0))
 
         shown = window_title(hwnd)
@@ -21800,7 +21993,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             box, text=shown, bg=BG, fg=MUTED_2,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(pady=(26, 8))
 
         state = {"attempts": 0, "grace_until": 0.0}
@@ -21963,7 +22156,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=520,
             justify="left"
         ).pack(
@@ -21988,7 +22181,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         note.pack(
@@ -22002,7 +22195,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 9, "bold")
+            font=(UI_FONT, 9, "bold")
         )
 
         sugg_label.pack(
@@ -22044,7 +22237,7 @@ class StudesticsApp(tk.Tk):
             before=chips
         )
 
-        chip_font = tkfont.Font(family="Segoe UI", size=10)
+        chip_font = tkfont.Font(family=UI_FONT, size=10)
 
         def flow(frame, items):
             """Lay buttons out left to right, wrapping to a new row."""
@@ -22505,7 +22698,7 @@ class StudesticsApp(tk.Tk):
             text="Studestics AI",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 12, "bold")
+            font=(UI_FONT, 12, "bold")
         ).pack(
             side="left"
         )
@@ -22515,7 +22708,7 @@ class StudesticsApp(tk.Tk):
             text="Ready",
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         )
 
         self.chat_status.pack(
@@ -22637,7 +22830,7 @@ class StudesticsApp(tk.Tk):
             inactiveselectbackground=PURPLE_HOVER,
             relief="flat",
             bd=0,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             wrap="word",
             highlightthickness=1,
             highlightbackground=BORDER,
@@ -22973,7 +23166,7 @@ class StudesticsApp(tk.Tk):
         canvas.create_text(
             size / 2, size / 2,
             text="S",
-            font=("Segoe UI", int(size * 0.4), "bold"),
+            font=(UI_FONT, int(size * 0.4), "bold"),
             fill="#FFFFFF"
         )
 
@@ -23194,8 +23387,8 @@ class StudesticsApp(tk.Tk):
         if fonts is None:
 
             fonts = (
-                tkfont.Font(family="Segoe UI", size=10),
-                tkfont.Font(family="Segoe UI", size=10, weight="bold")
+                tkfont.Font(family=UI_FONT, size=10),
+                tkfont.Font(family=UI_FONT, size=10, weight="bold")
             )
 
             self._bubble_fonts = fonts
@@ -23753,7 +23946,7 @@ class StudesticsApp(tk.Tk):
 
         label = tk.Label(
             holder, bg=PANEL, fg=MUTED_2,
-            font=("Segoe UI", 9), cursor="hand2", bd=0
+            font=(UI_FONT, 9), cursor="hand2", bd=0
         )
 
         def show(kind):
@@ -24648,14 +24841,14 @@ class StudesticsApp(tk.Tk):
 
                 icon = tk.Label(
                     row, text=char, bg=PANEL_2, fg=TEXT,
-                    font=("Segoe UI", 12)
+                    font=(UI_FONT, 12)
                 )
 
             icon.pack(side="left", padx=(12, 8), pady=5)
 
             label = tk.Label(
                 row, text=f":{name}:", bg=PANEL_2, fg=TEXT,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             )
 
             label.pack(side="left", pady=5)
@@ -24854,21 +25047,21 @@ class StudesticsApp(tk.Tk):
 
             name = tk.Label(
                 top, text=cmd, bg=PANEL_2, fg=TEXT,
-                font=("Segoe UI", 10, "bold")
+                font=(UI_FONT, 10, "bold")
             )
 
             name.pack(side="left")
 
             hint = tk.Label(
                 top, text=arg, bg=PANEL_2, fg=MUTED_2,
-                font=("Segoe UI", 9, "italic")
+                font=(UI_FONT, 9, "italic")
             )
 
             hint.pack(side="left", padx=(8, 0))
 
             info = tk.Label(
                 row, text=desc, bg=PANEL_2, fg=MUTED_2,
-                font=("Segoe UI", 9), anchor="w", justify="left"
+                font=(UI_FONT, 9), anchor="w", justify="left"
             )
 
             info.pack(fill="x", padx=12, pady=(0, 7))
@@ -25144,7 +25337,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=PANEL_2,
             fg=MUTED,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             anchor="w"
         )
 
@@ -25227,7 +25420,7 @@ class StudesticsApp(tk.Tk):
                         cell_px // 2, cell_px // 2,
                         text=char[0] if ord(char[0]) < 0x10000 else "\u25AF",
                         fill=TEXT,
-                        font=("Segoe UI", 14)
+                        font=(UI_FONT, 14)
                     )
 
                 cell.bind(
@@ -25267,7 +25460,7 @@ class StudesticsApp(tk.Tk):
                 text=name,
                 bg=PANEL_2,
                 fg=MUTED,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 cursor="hand2",
                 pady=5
             )
@@ -25698,7 +25891,7 @@ class StudesticsApp(tk.Tk):
                 compound="center",
                 bg=PANEL_2 if photo is None else PANEL,
                 fg=TEXT,
-                font=("Segoe UI", 9, "bold"),
+                font=(UI_FONT, 9, "bold"),
                 width=9 if photo is None else 0,
                 height=4 if photo is None else 0,
                 bd=0
@@ -25708,7 +25901,7 @@ class StudesticsApp(tk.Tk):
 
             badge = tk.Label(
                 box, text="×", bg=BG, fg=TEXT,
-                font=("Segoe UI", 10, "bold"), padx=5,
+                font=(UI_FONT, 10, "bold"), padx=5,
                 cursor="hand2"
             )
 
@@ -28065,13 +28258,13 @@ class StudesticsApp(tk.Tk):
         head.pack(fill="x", padx=20, pady=(20, 12))
 
         head_title = tk.Label(
-            head, bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold")
+            head, bg=PANEL, fg=TEXT, font=(UI_FONT, 14, "bold")
         )
 
         head_title.pack(anchor="w")
 
         head_sub = tk.Label(
-            head, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)
+            head, bg=PANEL, fg=MUTED, font=(UI_FONT, 9)
         )
 
         head_sub.pack(anchor="w", pady=(2, 0))
@@ -28238,7 +28431,7 @@ class StudesticsApp(tk.Tk):
             text=title,
             bg=PANEL,
             fg=TEXT if session["task_title"] else MUTED,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             anchor="w"
         ).pack(
             anchor="w"
@@ -28270,7 +28463,7 @@ class StudesticsApp(tk.Tk):
             text=detail,
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             anchor="w"
         ).pack(
             anchor="w"
@@ -28290,7 +28483,7 @@ class StudesticsApp(tk.Tk):
             text=fmt_duration(session["actual_seconds"]),
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             anchor="e"
         ).pack(
             anchor="e"
@@ -28303,7 +28496,7 @@ class StudesticsApp(tk.Tk):
             text="✓ Finished" if finished else "Stopped early",
             bg=PANEL,
             fg=GREEN if finished else MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             anchor="e"
         ).pack(
             anchor="e"
@@ -28617,7 +28810,7 @@ class StudesticsApp(tk.Tk):
                     canvas.create_text(
                         width - 4, height - label_h / 2 + 2,
                         text="Today", fill=TEXT, anchor="e",
-                        font=("Segoe UI", 9)
+                        font=(UI_FONT, 9)
                     )
                 elif i % 5 == 0 and i < count - 3:
                     try:
@@ -28628,13 +28821,13 @@ class StudesticsApp(tk.Tk):
                         label = day
                     canvas.create_text(
                         x, height - label_h / 2 + 2, text=label,
-                        fill=MUTED, font=("Segoe UI", 9)
+                        fill=MUTED, font=(UI_FONT, 9)
                     )
 
                 if secs > 0 and secs == biggest:
                     canvas.create_text(
                         x, y - 14, text=fmt_duration(secs),
-                        fill=MUTED, font=("Segoe UI", 8)
+                        fill=MUTED, font=(UI_FONT, 8)
                     )
 
         except Exception:
@@ -28795,7 +28988,7 @@ class StudesticsApp(tk.Tk):
                     height - label_h / 2 + 2,
                     text=label,
                     fill=TEXT if index == count - 1 else MUTED,
-                    font=("Segoe UI", 9)
+                    font=(UI_FONT, 9)
                 )
 
                 if secs > 0 and (not many or secs == biggest):
@@ -28804,7 +28997,7 @@ class StudesticsApp(tk.Tk):
                         y0 - 10,
                         text=fmt_duration(secs),
                         fill=MUTED,
-                        font=("Segoe UI", 8)
+                        font=(UI_FONT, 8)
                     )
 
         except Exception:
@@ -28992,7 +29185,7 @@ class StudesticsApp(tk.Tk):
             text="Model",
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(
             anchor="w",
             pady=(0, 3)
@@ -29066,7 +29259,7 @@ class StudesticsApp(tk.Tk):
             textvariable=self.gemini_model_var,
             bg=PANEL_2,
             fg=TEXT,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             anchor="w",
             padx=12,
             pady=10
@@ -29079,7 +29272,7 @@ class StudesticsApp(tk.Tk):
             text="\u25BE",
             bg=PANEL_2,
             fg=MUTED,
-            font=("Segoe UI", 11),
+            font=(UI_FONT, 11),
             padx=12
         )
 
@@ -29207,7 +29400,7 @@ class StudesticsApp(tk.Tk):
                 relief="flat",
                 bd=0,
                 highlightthickness=0,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             )
 
             entry.pack(
@@ -29318,7 +29511,7 @@ class StudesticsApp(tk.Tk):
                     text="\u2713" if name == now else "",
                     bg=PANEL_2,
                     fg=PURPLE_HOVER,
-                    font=("Segoe UI", 10, "bold"),
+                    font=(UI_FONT, 10, "bold"),
                     width=2
                 )
 
@@ -29329,7 +29522,7 @@ class StudesticsApp(tk.Tk):
                     text=text,
                     bg=PANEL_2,
                     fg=TEXT,
-                    font=("Segoe UI", 10),
+                    font=(UI_FONT, 10),
                     anchor="w",
                     pady=8
                 )
@@ -29345,7 +29538,7 @@ class StudesticsApp(tk.Tk):
                         text="\u2715",
                         bg=PANEL_2,
                         fg=MUTED_2,
-                        font=("Segoe UI", 9),
+                        font=(UI_FONT, 9),
                         padx=10,
                         cursor="hand2"
                     )
@@ -29375,7 +29568,7 @@ class StudesticsApp(tk.Tk):
                     text=note,
                     bg=PANEL_2,
                     fg=MUTED_2,
-                    font=("Segoe UI", 8),
+                    font=(UI_FONT, 8),
                     padx=12
                 )
 
@@ -29551,7 +29744,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             wraplength=650,
             justify="left"
         ).pack(
@@ -29565,7 +29758,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         )
 
         self.settings_status.pack(
@@ -29683,7 +29876,7 @@ class StudesticsApp(tk.Tk):
                  "site or app while the timer runs.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8)
+            font=(UI_FONT, 8)
         ).pack(
             side="left",
             padx=12
@@ -29774,7 +29967,7 @@ class StudesticsApp(tk.Tk):
                  "Click it to pause or resume the timer. Drag it to move it.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             justify="left"
         ).pack(
             anchor="w",
@@ -29878,7 +30071,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             test_row, text="Test alarm", bg=PANEL, fg=MUTED,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(side="left", padx=(0, 12))
 
         for level in ("Low", "Medium", "High"):
@@ -29935,7 +30128,7 @@ class StudesticsApp(tk.Tk):
                  "never removed.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             wraplength=650,
             justify="left"
         ).pack(
@@ -29961,7 +30154,7 @@ class StudesticsApp(tk.Tk):
             text=note,
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 8),
+            font=(UI_FONT, 8),
             wraplength=650,
             justify="left"
         ).pack(
@@ -29990,6 +30183,8 @@ class StudesticsApp(tk.Tk):
 
         glass_panel = self._build_glass_plain_card()
 
+        font_panel = self._build_font_card()
+
         sound_panel = self._build_sound_card()
 
         update_panel = self._build_update_card()
@@ -30003,6 +30198,7 @@ class StudesticsApp(tk.Tk):
                 "Colours and theme."
             ), None),
             (appearance_panel, (0, 15)),
+            (font_panel, (0, 15)),
             (timer_bg_panel, (0, 15)),
             (sidebar_panel, (0, 15)),
             (anim_panel, (0, 15)),
@@ -30076,7 +30272,7 @@ class StudesticsApp(tk.Tk):
             text=title.upper(),
             bg=BG,
             fg=PURPLE_HOVER,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(
             side="left"
         )
@@ -30098,7 +30294,7 @@ class StudesticsApp(tk.Tk):
             text=subtitle,
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(
             anchor="w",
             pady=(3, 0)
@@ -30292,7 +30488,7 @@ class StudesticsApp(tk.Tk):
         tk.Label(
             win,
             text="Click the colour the app should be built around.",
-            bg=BG, fg=MUTED, font=("Segoe UI", 10)
+            bg=BG, fg=MUTED, font=(UI_FONT, 10)
         ).pack(anchor="w", padx=28)
 
         top = tk.Frame(win, bg=BG)
@@ -30366,7 +30562,7 @@ class StudesticsApp(tk.Tk):
             )
 
         tk.Label(
-            win, text="Name", bg=BG, fg=MUTED, font=("Segoe UI", 9, "bold")
+            win, text="Name", bg=BG, fg=MUTED, font=(UI_FONT, 9, "bold")
         ).pack(anchor="w", padx=28, pady=(18, 4))
 
         name_var = tk.StringVar(
@@ -30386,7 +30582,7 @@ class StudesticsApp(tk.Tk):
         tk.Label(
             row,
             text="Also use it as the full screen timer background",
-            bg=BG, fg=TEXT, font=("Segoe UI", 10)
+            bg=BG, fg=TEXT, font=(UI_FONT, 10)
         ).pack(side="left")
 
         self.make_switch(
@@ -30689,7 +30885,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             row, text=label, bg=PANEL, fg=TEXT, width=11, anchor="w",
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(side="left")
 
         width = 230
@@ -30703,7 +30899,7 @@ class StudesticsApp(tk.Tk):
 
         readout = tk.Label(
             row, text=str(value), bg=PANEL, fg=MUTED, width=5,
-            anchor="e", font=("Segoe UI", 10)
+            anchor="e", font=(UI_FONT, 10)
         )
 
         readout.pack(side="left")
@@ -30759,7 +30955,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             card, text="Timer background", bg=PANEL, fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w", padx=25, pady=(18, 2))
 
         tk.Label(
@@ -30768,7 +30964,7 @@ class StudesticsApp(tk.Tk):
                 "A picture behind the timer when you press F or the "
                 "full screen button."
             ),
-            bg=PANEL, fg=MUTED_2, font=("Segoe UI", 9)
+            bg=PANEL, fg=MUTED_2, font=(UI_FONT, 9)
         ).pack(anchor="w", padx=25)
 
         body = tk.Frame(card, bg=PANEL)
@@ -30833,7 +31029,7 @@ class StudesticsApp(tk.Tk):
                 preview.create_text(
                     pw / 2, ph / 2,
                     text="No picture yet",
-                    fill=MUTED_2, font=("Segoe UI", 10)
+                    fill=MUTED_2, font=(UI_FONT, 10)
                 )
 
                 return
@@ -30846,7 +31042,7 @@ class StudesticsApp(tk.Tk):
 
             preview.create_text(
                 pw / 2, ph / 2, text="25:00", fill=TEXT,
-                font=("Segoe UI", -52, "bold")
+                font=(UI_FONT, -52, "bold")
             )
 
         def soon():
@@ -30902,7 +31098,7 @@ class StudesticsApp(tk.Tk):
         tk.Label(
             right,
             text="GIFs work too, and move in the full screen timer.",
-            bg=PANEL, fg=MUTED_2, font=("Segoe UI", 9)
+            bg=PANEL, fg=MUTED_2, font=(UI_FONT, 9)
         ).pack(anchor="w", pady=(0, 8))
 
         def slider(key, label, low, high):
@@ -31027,7 +31223,7 @@ class StudesticsApp(tk.Tk):
                 text=title,
                 bg=PANEL,
                 fg=TEXT,
-                font=("Segoe UI", 11, "bold")
+                font=(UI_FONT, 11, "bold")
             ).pack(
                 anchor="w"
             )
@@ -31037,7 +31233,7 @@ class StudesticsApp(tk.Tk):
                 text=text,
                 bg=PANEL,
                 fg=MUTED_2,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 wraplength=560,
                 justify="left"
             ).pack(
@@ -31165,7 +31361,7 @@ class StudesticsApp(tk.Tk):
             text="Theme",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w", padx=25, pady=(18, 2))
 
         tk.Label(
@@ -31173,7 +31369,7 @@ class StudesticsApp(tk.Tk):
             text="Pick the colours for the whole app.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(anchor="w", padx=25)
 
         tiles = tk.Frame(card, bg=PANEL)
@@ -31257,7 +31453,7 @@ class StudesticsApp(tk.Tk):
                 text=name,
                 bg=PANEL,
                 fg=TEXT,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 cursor="hand2"
             )
 
@@ -31292,7 +31488,7 @@ class StudesticsApp(tk.Tk):
                         32, 10,
                         text="Remove",
                         fill="#FFFFFF" if hover else MUTED,
-                        font=("Segoe UI", 8)
+                        font=(UI_FONT, 8)
                     )
 
                 paint(False)
@@ -31331,7 +31527,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(anchor="w", padx=25, pady=(0, 4))
 
         restart_row = tk.Frame(card, bg=PANEL)
@@ -31341,7 +31537,7 @@ class StudesticsApp(tk.Tk):
             textvariable=hint_var,
             bg=PANEL,
             fg=YELLOW,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(side="left")
 
         self.make_button(
@@ -31456,7 +31652,7 @@ class StudesticsApp(tk.Tk):
             text="Start with Windows",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(
             anchor="w"
         )
@@ -31467,7 +31663,7 @@ class StudesticsApp(tk.Tk):
                  "so reminders keep working.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(
@@ -31520,7 +31716,7 @@ class StudesticsApp(tk.Tk):
             text="Run in background",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w")
 
         tk.Label(
@@ -31529,7 +31725,7 @@ class StudesticsApp(tk.Tk):
                  "reminders still fire. Off: closing the window quits the app.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(anchor="w", pady=(2, 0))
@@ -31570,7 +31766,7 @@ class StudesticsApp(tk.Tk):
             text="Tasks and goals in the sidebar",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w")
 
         tk.Label(
@@ -31579,7 +31775,7 @@ class StudesticsApp(tk.Tk):
                  "Turn off for a cleaner sidebar.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(anchor="w", pady=(2, 0))
@@ -31631,7 +31827,7 @@ class StudesticsApp(tk.Tk):
             row,
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold"),
+            font=(UI_FONT, 11, "bold"),
             width=7
         )
 
@@ -31640,7 +31836,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=PANEL,
             fg=YELLOW,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         def refresh():
@@ -31695,7 +31891,7 @@ class StudesticsApp(tk.Tk):
             text="Start-up animation",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w")
 
         tk.Label(
@@ -31704,7 +31900,7 @@ class StudesticsApp(tk.Tk):
                  "open straight to your Dashboard.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(anchor="w", pady=(2, 0))
@@ -31721,6 +31917,532 @@ class StudesticsApp(tk.Tk):
         self.settings_anim_button.configure(selected=enabled)
 
         self.settings_anim_button.pack(side="right")
+
+        return outer
+
+    def _build_font_card(self):
+        """Settings > Appearance: pick the font the whole app uses from
+        a drawer that slides open (same look as the model picker), with
+        Custom... to add your own .ttf / .otf file."""
+
+        import json
+
+        outer, card = self.rounded_panel(
+            self.page, radius=16, fit=True
+        )
+
+        body = tk.Frame(card, bg=PANEL)
+
+        body.pack(fill="x", padx=25, pady=18)
+
+        tk.Label(
+            body, text="Font", bg=PANEL, fg=TEXT,
+            font=(UI_FONT, 11, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            body,
+            text="The font Studestics uses everywhere. Pick one from "
+                 "the list, or choose Custom to add a font file "
+                 "(.ttf or .otf). Restart Studestics to apply a change.",
+            bg=PANEL, fg=MUTED_2, font=(UI_FONT, 9),
+            wraplength=560, justify="left"
+        ).pack(anchor="w", pady=(2, 10))
+
+        installed = set(tkfont.families())
+
+        popular = [
+            (DEFAULT_FONT, "Default"),
+            ("Arial", "Clean"),
+            ("Calibri", "Friendly"),
+            ("Verdana", "Wide and easy to read"),
+            ("Tahoma", "Compact"),
+            ("Trebuchet MS", "Rounded"),
+            ("Candara", "Soft"),
+            ("Corbel", "Neat"),
+            ("Bahnschrift", "Modern"),
+            ("Inter", "Modern"),
+            ("Roboto", "Modern"),
+            ("Poppins", "Rounded"),
+            ("Montserrat", "Modern"),
+            ("Open Sans", "Clean"),
+            ("Nunito", "Rounded"),
+            ("Georgia", "Serif"),
+            ("Cambria", "Serif"),
+            ("Times New Roman", "Serif"),
+            ("Consolas", "Monospace"),
+            ("JetBrains Mono", "Monospace"),
+            ("Courier New", "Monospace"),
+            ("Comic Sans MS", "Casual"),
+        ]
+
+        builtin = [
+            (n, note) for n, note in popular
+            if n == DEFAULT_FONT or n in installed
+        ]
+
+        builtin_names = [n for n, _ in builtin]
+
+        def load_custom():
+
+            try:
+
+                data = json.loads(self.db.get_setting("custom_fonts", "[]"))
+
+                return [
+                    e for e in data
+                    if isinstance(e, dict) and e.get("name")
+                ]
+
+            except Exception:
+                return []
+
+        custom = load_custom()
+
+        def save_custom_list():
+
+            try:
+                self.db.set_setting("custom_fonts", json.dumps(custom))
+            except Exception:
+                pass
+
+        font_var = tk.StringVar(value=UI_FONT)
+
+        status_row = tk.Frame(body, bg=PANEL)
+
+        status = tk.Label(
+            status_row, text="", bg=PANEL, fg=YELLOW, font=(UI_FONT, 9)
+        )
+
+        status.pack(side="left")
+
+        restart_button = self.make_button(
+            status_row, "Restart now", self.restart_app, width=13
+        )
+
+        def say(text, colour=YELLOW, restart=False):
+
+            status.configure(text=text, fg=colour)
+
+            restart_button.canvas.pack_forget()
+
+            if restart:
+                restart_button.pack(side="right")
+
+            if text:
+                status_row.pack(fill="x", pady=(8, 0))
+            else:
+                status_row.pack_forget()
+
+        box_row = tk.Frame(body, bg=PANEL)
+
+        box_row.pack(anchor="w")
+
+        dropdown = tk.Frame(
+            box_row, bg=PANEL_2, highlightthickness=1,
+            highlightbackground=BORDER, cursor="hand2",
+            width=380, height=42
+        )
+
+        dropdown.pack(side="left")
+        dropdown.pack_propagate(False)
+
+        current_label = tk.Label(
+            dropdown, textvariable=font_var, bg=PANEL_2, fg=TEXT,
+            font=(UI_FONT, 10), anchor="w", padx=12
+        )
+
+        current_label.pack(side="left", fill="both", expand=True)
+
+        arrow = tk.Label(
+            dropdown, text="\u25BE", bg=PANEL_2, fg=MUTED,
+            font=(UI_FONT, 11), padx=12
+        )
+
+        arrow.pack(side="right")
+
+        def tint(colour):
+
+            for widget in (dropdown, current_label, arrow):
+                widget.configure(bg=colour)
+
+        def choose(name):
+
+            font_var.set(name)
+
+            self.db.set_setting("ui_font", name)
+
+            if name == UI_FONT:
+                say("")
+            else:
+                say(
+                    f"{name} will be used after a restart.",
+                    YELLOW, restart=True
+                )
+
+        def add_font_file():
+
+            path = filedialog.askopenfilename(
+                parent=self,
+                title="Choose a font file",
+                filetypes=[("Font files", "*.ttf *.otf"), ("All files", "*.*")]
+            )
+
+            if not path:
+                return
+
+            try:
+
+                source = Path(path)
+
+                family = ImageFont.truetype(str(source), 12).getname()[0]
+
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", source.name)
+
+                target_name = f"{int(time.time())}_{safe}"
+
+                shutil.copyfile(source, FONTS_DIR / target_name)
+
+                register_font_file(FONTS_DIR / target_name)
+
+            except Exception as exc:
+
+                say(f"Couldn't add that font: {exc}", RED)
+
+                return
+
+            custom[:] = [e for e in custom if e["name"] != family]
+
+            custom.append({"name": family, "file": target_name})
+
+            save_custom_list()
+
+            choose(family)
+
+        def remove_font(name):
+
+            for entry in list(custom):
+
+                if entry["name"] == name:
+
+                    custom.remove(entry)
+
+                    try:
+                        (FONTS_DIR / entry["file"]).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            save_custom_list()
+
+            if font_var.get() == name:
+                choose(DEFAULT_FONT)
+
+        menu = {"win": None}
+
+        def close_menu(animate=True):
+
+            win = menu["win"]
+
+            menu["win"] = None
+
+            if win is None:
+                return
+
+            def done():
+
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+            if not animate:
+                done()
+                return
+
+            try:
+
+                width, full, left, top = win._geo
+
+                def step(i=5):
+
+                    try:
+
+                        t = i / 5
+
+                        win.geometry(
+                            f"{width}x{full}+{left}+{top - int(6 * (1 - t))}"
+                        )
+
+                        win.attributes("-alpha", t)
+
+                        if i <= 0:
+                            done()
+                        else:
+                            win.after(12, lambda: step(i - 1))
+
+                    except Exception:
+                        done()
+
+                step()
+
+            except Exception:
+                done()
+
+        def open_menu(event=None):
+
+            if menu["win"] is not None:
+
+                close_menu()
+
+                return
+
+            win = tk.Toplevel(self)
+
+            win.withdraw()
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.attributes("-alpha", 0.0)
+            win.configure(bg=BORDER)
+
+            frame = tk.Frame(win, bg=PANEL_2)
+
+            frame.pack(padx=1, pady=1, fill="both", expand=True)
+
+            tk.Frame(frame, bg=PANEL_2, height=4).pack()
+
+            holder = tk.Frame(frame, bg=PANEL_2)
+
+            holder.pack(fill="both", expand=True)
+
+            inner = self._scroll_area(holder, bg=PANEL_2)
+
+            now = font_var.get()
+
+            def add_row(name, text, note, removable=False, font_name=None):
+
+                row = tk.Frame(inner, bg=PANEL_2, cursor="hand2")
+
+                row.pack(fill="x", padx=4, pady=1)
+
+                mark = tk.Label(
+                    row, text="\u2713" if name == now else "",
+                    bg=PANEL_2, fg=PURPLE_HOVER,
+                    font=(UI_FONT, 10, "bold"), width=2
+                )
+
+                mark.pack(side="left", padx=(6, 0))
+
+                title = tk.Label(
+                    row, text=text, bg=PANEL_2, fg=TEXT,
+                    font=(font_name or UI_FONT, 11),
+                    anchor="w", pady=7
+                )
+
+                title.pack(side="left")
+
+                cross = None
+
+                if removable:
+
+                    cross = tk.Label(
+                        row, text="\u2715", bg=PANEL_2, fg=MUTED_2,
+                        font=(UI_FONT, 9), padx=10, cursor="hand2"
+                    )
+
+                    cross.pack(side="right")
+
+                    cross.bind(
+                        "<Enter>", lambda e: cross.configure(fg=RED)
+                    )
+
+                    cross.bind(
+                        "<Leave>", lambda e: cross.configure(fg=MUTED_2)
+                    )
+
+                    cross.bind(
+                        "<ButtonRelease-1>",
+                        lambda e, n=name: (close_menu(), remove_font(n))
+                    )
+
+                hint = tk.Label(
+                    row, text=note, bg=PANEL_2, fg=MUTED_2,
+                    font=(UI_FONT, 8), padx=12
+                )
+
+                hint.pack(side="right")
+
+                parts = (row, mark, title, hint)
+
+                def paint(colour):
+
+                    for part in parts + ((cross,) if cross else ()):
+                        part.configure(bg=colour)
+
+                for part in parts:
+
+                    part.bind("<Enter>", lambda e: paint(HOVER_BG))
+                    part.bind("<Leave>", lambda e: paint(PANEL_2))
+
+                    part.bind(
+                        "<ButtonRelease-1>",
+                        lambda e, n=name: (
+                            close_menu(False if n is None else True),
+                            self.after(40, add_font_file)
+                            if n is None else choose(n)
+                        )
+                    )
+
+            for name, note in builtin:
+                add_row(name, name, note, font_name=name)
+
+            for entry in custom:
+
+                add_row(
+                    entry["name"], entry["name"], "Added by you",
+                    removable=True, font_name=entry["name"]
+                )
+
+            add_row(None, "Custom\u2026", "Add a font file")
+
+            tk.Frame(frame, bg=PANEL_2, height=4).pack()
+
+            win.update_idletasks()
+
+            # Show about 7 rows at a time; the rest scrolls.
+            canvas = inner.master
+
+            wanted = min(inner.winfo_reqheight(), 7 * 40)
+
+            canvas.configure(height=wanted)
+
+            win.update_idletasks()
+
+            width = dropdown.winfo_width()
+            full = win.winfo_reqheight()
+            left = dropdown.winfo_rootx()
+            top = dropdown.winfo_rooty() + dropdown.winfo_height() + 4
+
+            win._geo = (width, full, left, top)
+
+            anchor = (dropdown.winfo_rootx(), dropdown.winfo_rooty())
+
+            win.geometry(f"{width}x{full}+{left}+{top - 10}")
+
+            win.attributes("-alpha", 0.0)
+
+            win.deiconify()
+            win.lift()
+
+            menu["win"] = win
+
+            def grow(i=1):
+
+                try:
+
+                    if menu["win"] is not win:
+                        return
+
+                    t = 1 - (1 - i / 7) ** 3
+
+                    win.geometry(
+                        f"{width}x{full}+{left}+{top - int(10 * (1 - t))}"
+                    )
+
+                    win.attributes("-alpha", t)
+
+                    if i < 7:
+                        win.after(14, lambda: grow(i + 1))
+
+                except Exception:
+                    pass
+
+            grow()
+
+            # No polling: one shared click / wheel / move handler
+            # (set up below) closes the drawer.
+            self._font_menu_state = {
+                "win": win, "dropdown": dropdown,
+                "close": lambda animate=True: close_menu(animate)
+            }
+
+        for widget in (dropdown, current_label, arrow):
+
+            widget.bind("<Button-1>", open_menu)
+            widget.bind("<Enter>", lambda e: tint(HOVER_BG))
+            widget.bind("<Leave>", lambda e: tint(PANEL_2))
+
+        dropdown.bind("<Destroy>", lambda e: close_menu(False))
+
+        if not getattr(self, "_font_menu_bound", False):
+
+            self._font_menu_bound = True
+
+            def inside(widget, x, y):
+
+                return (
+                    widget.winfo_rootx() <= x
+                    < widget.winfo_rootx() + widget.winfo_width()
+                    and widget.winfo_rooty() <= y
+                    < widget.winfo_rooty() + widget.winfo_height()
+                )
+
+            def shared(event):
+
+                state = getattr(self, "_font_menu_state", None)
+
+                if not state or state["win"] is None:
+                    return
+
+                try:
+
+                    if not state["win"].winfo_exists():
+                        self._font_menu_state = None
+                        return
+
+                    kind = event.type.name if hasattr(
+                        event.type, "name"
+                    ) else str(event.type)
+
+                    if kind == "Configure":
+
+                        # Only the main window moving / resizing.
+                        if event.widget is self:
+                            state["close"](False)
+
+                        return
+
+                    x, y = event.x_root, event.y_root
+
+                    # Clicks / wheel on the drawer itself are its own.
+                    if inside(state["win"], x, y):
+                        return
+
+                    # A click on the box toggles it (handled there).
+                    if kind == "ButtonPress" and inside(
+                        state["dropdown"], x, y
+                    ):
+                        return
+
+                    state["close"](kind == "ButtonPress")
+
+                except Exception:
+                    pass
+
+            self.bind_all("<Button-1>", shared, add="+")
+            self.bind_all("<MouseWheel>", shared, add="+")
+            self.bind("<Configure>", shared, add="+")
+
+        # Coming back to Settings before restarting keeps the reminder.
+        saved = self.db.get_setting("ui_font", DEFAULT_FONT)
+
+        font_var.set(saved)
+
+        if saved != UI_FONT:
+
+            say(
+                f"{saved} will be used after a restart.",
+                YELLOW, restart=True
+            )
 
         return outer
 
@@ -31745,7 +32467,7 @@ class StudesticsApp(tk.Tk):
             text="Glass buttons on every card (experimental)",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w")
 
         tk.Label(
@@ -31755,7 +32477,7 @@ class StudesticsApp(tk.Tk):
                  "picture too.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(anchor="w", pady=(2, 0))
@@ -31902,7 +32624,7 @@ class StudesticsApp(tk.Tk):
             text="Welcome page",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(
             anchor="w"
         )
@@ -31913,7 +32635,7 @@ class StudesticsApp(tk.Tk):
                  "Nothing is saved or changed.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=560,
             justify="left"
         ).pack(
@@ -32576,7 +33298,7 @@ class StudesticsApp(tk.Tk):
                 text=title,
                 bg=BG,
                 fg=TEXT,
-                font=("Segoe UI", 24, "bold")
+                font=(UI_FONT, 24, "bold")
             ).pack()
 
             if text:
@@ -32586,7 +33308,7 @@ class StudesticsApp(tk.Tk):
                     text=text,
                     bg=BG,
                     fg=MUTED,
-                    font=("Segoe UI", 11),
+                    font=(UI_FONT, 11),
                     wraplength=420,
                     justify="center"
                 ).pack(
@@ -32611,7 +33333,7 @@ class StudesticsApp(tk.Tk):
                         bg=PURPLE,
                         fg="#FFFFFF",
                         width=2,
-                        font=("Segoe UI", 9, "bold")
+                        font=(UI_FONT, 9, "bold")
                     ).pack(side="left", padx=(0, 10))
 
                     tk.Label(
@@ -32619,7 +33341,7 @@ class StudesticsApp(tk.Tk):
                         text=line,
                         bg=BG,
                         fg=TEXT,
-                        font=("Segoe UI", 10),
+                        font=(UI_FONT, 10),
                         wraplength=380,
                         justify="left"
                     ).pack(side="left")
@@ -32703,7 +33425,7 @@ class StudesticsApp(tk.Tk):
                 text="Welcome to Studestics",
                 bg=BG,
                 fg=TEXT,
-                font=("Segoe UI", 28, "bold")
+                font=(UI_FONT, 28, "bold")
             ).pack()
 
             tk.Label(
@@ -32711,7 +33433,7 @@ class StudesticsApp(tk.Tk):
                 text="A quiet place to organize your study life.",
                 bg=BG,
                 fg=MUTED,
-                font=("Segoe UI", 12)
+                font=(UI_FONT, 12)
             ).pack(
                 pady=(6, 24)
             )
@@ -32729,7 +33451,7 @@ class StudesticsApp(tk.Tk):
                 text="Add a photo (optional)",
                 bg=BG,
                 fg=MUTED_2,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 cursor="hand2"
             )
 
@@ -32740,7 +33462,7 @@ class StudesticsApp(tk.Tk):
                 text="What should Studestics call you?",
                 bg=BG,
                 fg=MUTED,
-                font=("Segoe UI", 10)
+                font=(UI_FONT, 10)
             ).pack(
                 pady=(0, 8)
             )
@@ -33006,7 +33728,7 @@ class StudesticsApp(tk.Tk):
         def plain():
             return tk.Label(
                 parent, text=text, bg=bg, fg=fg or TEXT,
-                font=("Segoe UI", size, "bold" if bold else "normal"),
+                font=(UI_FONT, size, "bold" if bold else "normal"),
                 anchor="w", justify="left", wraplength=wrap or 0
             )
 
@@ -33134,7 +33856,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             column, text=kicker.upper(), bg=BG, fg=accent,
-            font=("Segoe UI", 10, "bold")
+            font=(UI_FONT, 10, "bold")
         ).pack(anchor="w")
 
         self._glow_heading(
@@ -33208,7 +33930,7 @@ class StudesticsApp(tk.Tk):
 
         kicker_label = tk.Label(
             column, text=kicker.upper(), bg=BG, fg=accent,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         )
 
         kicker_label.pack(anchor="w")
@@ -33229,7 +33951,7 @@ class StudesticsApp(tk.Tk):
 
         sub_label = tk.Label(
             column, text=subtitle, bg=BG, fg=MUTED,
-            font=("Segoe UI", 10), anchor="w", justify="left",
+            font=(UI_FONT, 10), anchor="w", justify="left",
             wraplength=width - 130
         )
 
@@ -33355,7 +34077,7 @@ class StudesticsApp(tk.Tk):
 
         tk.Label(
             column, text=title, bg=PANEL, fg=TEXT,
-            font=("Segoe UI", 11, "bold"), anchor="w"
+            font=(UI_FONT, 11, "bold"), anchor="w"
         ).pack(anchor="w")
 
         meta_label = None
@@ -33363,7 +34085,7 @@ class StudesticsApp(tk.Tk):
         if meta:
             meta_label = tk.Label(
                 column, text=meta, bg=PANEL, fg=meta_color or MUTED_2,
-                font=("Segoe UI", 9), anchor="w"
+                font=(UI_FONT, 9), anchor="w"
             )
             meta_label.pack(anchor="w")
 
@@ -33493,7 +34215,7 @@ class StudesticsApp(tk.Tk):
 
                 tk.Label(
                     inner, text=line, bg=PANEL_2,
-                    fg=TEXT if line else MUTED, font=("Segoe UI", 10),
+                    fg=TEXT if line else MUTED, font=(UI_FONT, 10),
                     anchor="w", justify="left", wraplength=400
                 ).pack(anchor="w", pady=1)
 
@@ -33891,7 +34613,7 @@ class StudesticsApp(tk.Tk):
             text="Alarm sound",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w", padx=25, pady=(18, 2))
 
         tk.Label(
@@ -33899,7 +34621,7 @@ class StudesticsApp(tk.Tk):
             text="Played for reminders and when a focus session ends.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(anchor="w", padx=25, pady=(0, 8))
 
         chips = {}
@@ -34061,7 +34783,7 @@ class StudesticsApp(tk.Tk):
             text="Your own sound:",
             bg=PANEL,
             fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         ).pack(side="left")
 
         file_label = tk.Label(
@@ -34069,7 +34791,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
 
         file_label.pack(side="left", padx=(8, 12))
@@ -34232,7 +34954,7 @@ class StudesticsApp(tk.Tk):
             height=11,
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 10),
+            font=(UI_FONT, 10),
             wrap="word",
             relief="flat",
             bd=0,
@@ -34683,7 +35405,7 @@ class StudesticsApp(tk.Tk):
             text="What's new",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 18, "bold")
+            font=(UI_FONT, 18, "bold")
         ).pack(anchor="w", pady=(24, 2))
 
         tk.Label(
@@ -34691,7 +35413,7 @@ class StudesticsApp(tk.Tk):
             text=f"You have Studestics v{VERSION}",
             bg=BG,
             fg=PURPLE_HOVER,
-            font=("Segoe UI", 10, "bold")
+            font=(UI_FONT, 10, "bold")
         ).pack(anchor="w")
 
         self._notes_box(body, notes).pack(
@@ -34736,7 +35458,7 @@ class StudesticsApp(tk.Tk):
             text="A new version is out",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 18, "bold")
+            font=(UI_FONT, 18, "bold")
         ).pack(anchor="w", pady=(24, 2))
 
         tk.Label(
@@ -34744,7 +35466,7 @@ class StudesticsApp(tk.Tk):
             text=f"Studestics {info['tag']}  (you have v{VERSION})",
             bg=BG,
             fg=PURPLE_HOVER,
-            font=("Segoe UI", 10, "bold")
+            font=(UI_FONT, 10, "bold")
         ).pack(anchor="w")
 
         self._notes_box(body, info["notes"]).pack(
@@ -34763,7 +35485,7 @@ class StudesticsApp(tk.Tk):
                 text=reason,
                 bg=BG,
                 fg=YELLOW,
-                font=("Segoe UI", 9),
+                font=(UI_FONT, 9),
                 wraplength=510,
                 justify="left"
             ).pack(anchor="w", pady=(12, 0))
@@ -34795,7 +35517,7 @@ class StudesticsApp(tk.Tk):
             text="",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             wraplength=510,
             justify="left"
         )
@@ -34899,7 +35621,7 @@ class StudesticsApp(tk.Tk):
             text="Update ready",
             bg=BG,
             fg=TEXT,
-            font=("Segoe UI", 18, "bold")
+            font=(UI_FONT, 18, "bold")
         ).pack(anchor="w", pady=(24, 2))
 
         tk.Label(
@@ -34910,7 +35632,7 @@ class StudesticsApp(tk.Tk):
             ),
             bg=BG,
             fg=PURPLE_HOVER,
-            font=("Segoe UI", 10, "bold"),
+            font=(UI_FONT, 10, "bold"),
             wraplength=510,
             justify="left"
         ).pack(anchor="w")
@@ -34960,7 +35682,7 @@ class StudesticsApp(tk.Tk):
             text=f"Updates  ·  v{VERSION}",
             bg=PANEL,
             fg=TEXT,
-            font=("Segoe UI", 11, "bold")
+            font=(UI_FONT, 11, "bold")
         ).pack(anchor="w")
 
         self._update_status = tk.Label(
@@ -34968,7 +35690,7 @@ class StudesticsApp(tk.Tk):
             text="Checks GitHub for a newer version when the app starts.",
             bg=PANEL,
             fg=MUTED_2,
-            font=("Segoe UI", 9),
+            font=(UI_FONT, 9),
             wraplength=480,
             justify="left"
         )
@@ -35214,7 +35936,7 @@ class StudesticsApp(tk.Tk):
 
                 tk.Label(
                     body, text=f"+ {count - 4} more", bg=BG, fg=MUTED_2,
-                    font=("Segoe UI", 9)
+                    font=(UI_FONT, 9)
                 ).pack(anchor="w", pady=(4, 0))
 
         # Keep "Overdue by 12 min" honest while the card is open.
@@ -35484,7 +36206,7 @@ class StudesticsApp(tk.Tk):
                 text=text,
                 bg=PANEL,
                 fg=colour,
-                font=("Segoe UI", 10, "bold" if bold else "normal"),
+                font=(UI_FONT, 10, "bold" if bold else "normal"),
                 anchor="w",
                 padx=14,
                 pady=8,
