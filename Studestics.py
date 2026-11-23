@@ -77,7 +77,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.96"
+VERSION = "1.6.97"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -1297,7 +1297,7 @@ POMO_LONG = 15 * 60
 
 # Distraction nudge: how often the front window is checked while a focus
 # session runs, and the minimum gap between two nudges.
-NUDGE_POLL_SECONDS = 3
+NUDGE_POLL_SECONDS = 1
 NUDGE_COOLDOWN_SECONDS = 60
 
 # Width of the options drawer that slides in on the Focus page.
@@ -2418,6 +2418,20 @@ def window_exists(hwnd):
 
     try:
         return bool(_user32().IsWindow(hwnd))
+    except Exception:
+        return False
+
+
+def window_shown(hwnd):
+    """True if the window is visible and not minimised. A program
+    that was 'closed' to the tray still exists but is hidden."""
+
+    if sys.platform != "win32" or not hwnd:
+        return False
+
+    try:
+        u = _user32()
+        return bool(u.IsWindowVisible(hwnd)) and not bool(u.IsIconic(hwnd))
     except Exception:
         return False
 
@@ -5343,7 +5357,7 @@ class StudesticsApp(tk.Tk):
 
             for attribute, value in (
                 (20, dark),          # dark title bar
-                (35, colour(BG)),    # caption colour
+                (35, colour(getattr(window, "_bar_color", BG))),    # caption colour
                 (34, colour(getattr(window, "_glow", BORDER))),  # window border
                 (36, colour(TEXT))   # caption text
             ):
@@ -9368,6 +9382,87 @@ class StudesticsApp(tk.Tk):
 
         return sorted(items, key=lambda t: t["id"], reverse=reverse)
 
+    def _round_popup(self, win):
+        """Round the corners of a frameless pop-up (Windows 11) and
+        give it the theme border colour."""
+
+        if sys.platform != "win32":
+            return
+
+        try:
+
+            import ctypes
+
+            win.update_idletasks()
+
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or \
+                win.winfo_id()
+
+            dwm = ctypes.windll.dwmapi
+
+            corner = ctypes.c_int(2)          # DWMWCP_ROUND
+
+            dwm.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(corner), 4
+            )
+
+            red, green, blue = _hex_rgb(BORDER)
+
+            border = ctypes.c_int(red | (green << 8) | (blue << 16))
+
+            dwm.DwmSetWindowAttribute(
+                hwnd, 34, ctypes.byref(border), 4
+            )
+
+        except Exception:
+            pass
+
+    def _menus_close_when_inactive(self):
+        """Pop-up menus (Sort, Font) close when you switch to another
+        program, instead of floating over it."""
+
+        if getattr(self, "_menus_inactive_bound", False):
+            return
+
+        self._menus_inactive_bound = True
+
+        def check():
+
+            try:
+
+                if self.focus_displayof() is not None:
+                    return
+
+            except Exception:
+                return
+
+            for name in ("_sort_menu_state", "_font_menu_state"):
+
+                state = getattr(self, name, None)
+
+                if state and state.get("win") is not None:
+
+                    try:
+                        state["close"](False)
+                    except Exception:
+                        pass
+
+            # The AI model drop-down in Settings.
+            closer = getattr(self, "_model_menu_closer", None)
+
+            if closer is not None:
+
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+        def lost(_event=None):
+            self.after(150, check)
+
+        self.bind("<FocusOut>", lost, add="+")
+        self.bind("<Unmap>", lost, add="+")
+
     def _sort_button(self, parent, scope, after_change):
         """A 'Sort' button that opens an Explorer-style menu: what to
         sort by, then Ascending / Descending."""
@@ -9507,6 +9602,8 @@ class StudesticsApp(tk.Tk):
             win.deiconify()
             win.lift()
 
+            self._round_popup(win)
+
             self._sort_menu_state = {
                 "win": win, "button": canvas, "close": close
             }
@@ -9539,6 +9636,8 @@ class StudesticsApp(tk.Tk):
         if not getattr(self, "_sort_menu_bound", False):
 
             self._sort_menu_bound = True
+
+            self._menus_close_when_inactive()
 
             def inside(widget, x, y):
 
@@ -11853,6 +11952,8 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
+            desc_stack()
+
         def render(event=None):
 
             width = canvas.winfo_width()
@@ -11968,10 +12069,250 @@ class StudesticsApp(tk.Tk):
             base.paste(composited, (0, 0), mask)
 
             state["base"] = base
+            state["mask"] = mask
+            desc["imgs"].clear()
 
             draw_composite()
 
+        # Photo cards hide the description until the mouse is over
+        # the card: a soft dark glow and the words ease in together.
+        desc_text = (
+            " ".join((task["description"] or "").split())
+            if has_photo else ""
+        )
+
+        if len(desc_text) > 220:
+            desc_text = desc_text[:219].rstrip() + "\u2026"
+
+        desc = {
+            "level": 0.0, "from": 0.0, "target": 0.0, "t0": 0.0,
+            "job": None, "imgs": {}, "built": -1,
+            "glow": None, "text": None, "box": None
+        }
+
+        def desc_wrap(room, max_lines):
+
+            lines, current = [], ""
+
+            for word in desc_text.split(" "):
+
+                # A word wider than the card is broken up.
+                while small_font.measure(word) > room and len(word) > 1:
+
+                    cut = len(word) - 1
+
+                    while cut > 1 and small_font.measure(word[:cut]) > room:
+                        cut -= 1
+
+                    if current:
+                        lines.append(current)
+                        current = ""
+
+                    lines.append(word[:cut])
+                    word = word[cut:]
+
+                trial = (current + " " + word).strip()
+
+                if current and small_font.measure(trial) > room:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = trial
+
+            if current:
+                lines.append(current)
+
+            if len(lines) > max_lines:
+
+                lines = lines[:max_lines]
+                last = lines[-1].rstrip()
+
+                while last and small_font.measure(last + "\u2026") > room:
+                    last = last[:-1]
+
+                lines[-1] = last.rstrip() + "\u2026"
+
+            return lines
+
+        def desc_build():
+
+            from PIL import ImageFilter
+
+            canvas.delete("desc_glow", "desc_txt")
+
+            desc["glow"] = desc["text"] = None
+            desc["built"] = state["width"]
+            desc["imgs"] = {}
+
+            room = max(60, state["width"] - pill_w - pill_margin - 42)
+
+            line_h = small_font.metrics("linespace")
+
+            top = 54
+
+            max_lines = max(1, min(2, (card_height - 44 - top) // line_h))
+
+            lines = desc_wrap(room, max_lines)
+
+            text_w = max(small_font.measure(l) for l in lines)
+            text_h = line_h * len(lines)
+
+            pad = 22
+
+            gw, gh = text_w + pad * 2 + 12, text_h + pad * 2
+
+            mask = Image.new("L", (gw, gh), 0)
+
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [pad, pad, gw - pad, gh - pad], radius=10, fill=255
+            )
+
+            mask = mask.filter(ImageFilter.GaussianBlur(13))
+
+            for q in range(1, 13):
+
+                alpha = mask.point(
+                    lambda v, q=q: int(v * 0.6 * q / 12)
+                )
+
+                layer = Image.new("RGBA", (gw, gh), (6, 6, 12, 255))
+
+                layer.putalpha(alpha)
+
+                desc["imgs"][q] = ImageTk.PhotoImage(layer)
+
+            desc["glow"] = canvas.create_image(
+                18 - pad, top - pad, anchor="nw", image=desc["imgs"][1],
+                tags="desc_glow", state="hidden"
+            )
+
+            desc["box"] = (18, top, 18 + text_w, top + text_h)
+
+            desc["text"] = canvas.create_text(
+                18, top, anchor="nw", text="\n".join(lines),
+                font=small_font, fill="#55555E", tags="desc_txt",
+                state="hidden"
+            )
+
+        def desc_apply():
+
+            if not desc_text or state["base"] is None:
+                return
+
+            if desc["built"] != state["width"]:
+                desc_build()
+
+            level = desc["level"]
+
+            q = round(level * 12)
+
+            if q <= 0:
+
+                canvas.itemconfigure("desc_glow", state="hidden")
+                canvas.itemconfigure("desc_txt", state="hidden")
+
+                return
+
+            canvas.itemconfigure(
+                desc["glow"], image=desc["imgs"][min(12, q)],
+                state="normal"
+            )
+
+            canvas.itemconfigure(
+                desc["text"], state="normal",
+                fill=mix_color("#55555E", "#FFFFFF", level)
+            )
+
+            try:
+                canvas.tag_raise("desc_glow", "card_bg")
+            except Exception:
+                pass
+
+            canvas.tag_raise("desc_txt")
+
+        def desc_stack():
+
+            desc_apply()
+
+        def desc_step():
+
+            desc["job"] = None
+
+            try:
+
+                p = min(1.0, (time.time() - desc["t0"]) / 0.24)
+
+                ease = p * p * (3 - 2 * p)
+
+                desc["level"] = (
+                    desc["from"] + (desc["target"] - desc["from"]) * ease
+                )
+
+                desc_apply()
+
+                if p < 1.0:
+                    desc["job"] = canvas.after(12, desc_step)
+
+            except Exception:
+                pass
+
+        def desc_goto(target):
+
+            if not desc_text or desc["target"] == target:
+                return
+
+            desc["from"] = desc["level"]
+            desc["target"] = target
+            desc["t0"] = time.time()
+
+            if desc["job"] is None:
+                desc["job"] = canvas.after(12, desc_step)
+
+        def desc_hit(x, y):
+            """True if (x, y) is on the visible description."""
+
+            full = (task["description"] or "").strip()
+
+            if not full:
+                return False
+
+            if has_photo:
+
+                box = desc["box"]
+
+                if not box or desc["level"] < 0.5:
+                    return False
+
+            else:
+
+                room = max(
+                    60, state["width"] - pill_w - pill_margin - 42
+                )
+
+                box = (
+                    18, 50, 18 + room,
+                    50 + small_font.metrics("linespace")
+                )
+
+            return (
+                box[0] - 6 <= x <= box[2] + 6
+                and box[1] - 4 <= y <= box[3] + 4
+            )
+
+        def desc_open():
+
+            self.show_description(
+                task["title"], (task["description"] or "").strip(),
+                source_image
+            )
+
         def on_motion(event):
+
+            desc_goto(1.0)
+
+            canvas.configure(
+                cursor="hand2" if desc_hit(event.x, event.y) else ""
+            )
 
             hovered = pill_at(event.x, event.y)
 
@@ -11981,6 +12322,8 @@ class StudesticsApp(tk.Tk):
                 draw_composite()
 
         def on_leave(event):
+
+            desc_goto(0.0)
 
             if state["hover"] is not None:
 
@@ -11993,6 +12336,10 @@ class StudesticsApp(tk.Tk):
 
             if hit is not None:
                 actions[hit]["command"]()
+                return
+
+            if desc_hit(event.x, event.y):
+                desc_open()
 
         canvas.bind("<Configure>", render)
         canvas.bind("<Motion>", on_motion)
@@ -12188,6 +12535,16 @@ class StudesticsApp(tk.Tk):
         )
 
         self.emoji_attach(description)
+
+        # After a paste, scroll so the end of what was pasted (where the
+        # cursor now is) stays in view.
+        description.bind(
+            "<<Paste>>",
+            lambda e: description.after_idle(
+                lambda: description.see("insert")
+            ),
+            add="+"
+        )
 
         if editing:
             self.emoji_write(description, task["description"] or "")
@@ -12954,7 +13311,7 @@ class StudesticsApp(tk.Tk):
 
             entry.configure(width=3, justify="center")
 
-            entry.pack(side="left", padx=6, ipady=5)
+            entry.pack(side="left", padx=3, ipady=5)
 
             self.make_button(
                 box, "+", lambda: (up(), redraw(True)), width=2
@@ -13040,7 +13397,7 @@ class StudesticsApp(tk.Tk):
 
         time_row = tk.Frame(side, bg=BG)
 
-        time_row.pack(anchor="w")
+        time_row.pack(anchor="center")
 
         hour_box, hour_entry = clock_box(
             time_row, 12,
@@ -13057,7 +13414,7 @@ class StudesticsApp(tk.Tk):
             bg=BG,
             fg=MUTED,
             font=(UI_FONT, 13, "bold")
-        ).pack(side="left", padx=4)
+        ).pack(side="left", padx=1)
 
         minute_box, minute_entry = clock_box(
             time_row, 59,
@@ -13072,10 +13429,10 @@ class StudesticsApp(tk.Tk):
             time_row,
             state.ampm(),
             lambda: (state.toggle_ampm(), redraw(True)),
-            width=4
+            width=3
         )
 
-        ampm_button.pack(side="left", padx=(10, 0))
+        ampm_button.pack(side="left", padx=(5, 0))
 
         redraw()
 
@@ -13093,6 +13450,213 @@ class StudesticsApp(tk.Tk):
             return state.value()
 
         return {"frame": frame, "get": get_value}
+
+    def show_description(self, title, description, picture=None):
+        """The whole description in a small window whose colours follow
+        the card's picture (same look as the crop window)."""
+
+        wbg, accent = mix_color(BG, BLUE, 0.07), BLUE
+
+        try:
+
+            import colorsys
+
+            if picture is not None:
+
+                shown = (
+                    _flatten_picture(picture) if _has_alpha(picture)
+                    else picture.convert("RGB")
+                )
+
+                r, g, b = shown.resize((1, 1), Image.LANCZOS).getpixel(
+                    (0, 0)
+                )
+
+                wbg = mix_color(BG, "#%02x%02x%02x" % (r, g, b), 0.22)
+
+                found = _image_accent(shown) or BLUE
+
+                if colorsys.rgb_to_hsv(
+                    *(c / 255 for c in _hex_rgb(found))
+                )[1] >= 0.25:
+                    accent = found
+
+        except Exception:
+            pass
+
+        window = tk.Toplevel(self)
+
+        window.title("Description")
+
+        # Built while hidden, then shown in one go, so there is no
+        # white flash while the content is still being drawn.
+        window.withdraw()
+
+        window._bar_color = wbg
+        window._glow = accent
+
+        window.configure(bg=wbg)
+
+        tk.Frame(window, bg=accent, height=4).pack(fill="x")
+
+        # Size the window to the text: count the wrapped lines with the
+        # real font.
+        body_font = tkfont.Font(family=UI_FONT, size=11)
+        head_font = tkfont.Font(family=UI_FONT, size=14, weight="bold")
+
+        def wrapped(text, font, room):
+
+            count = 0
+
+            for part in text.split("\n"):
+
+                count += 1
+                used = 0
+
+                for word in part.split(" "):
+
+                    need = font.measure(word + " ")
+
+                    if used and used + need > room:
+                        count += 1
+                        used = 0
+
+                    used += need
+
+            return count
+
+        text_lines = min(14, wrapped(description, body_font, 448))
+        head_lines = wrapped(title, head_font, 500)
+
+        height = (
+            4 + 18 + head_lines * head_font.metrics("linespace") + 10
+            + text_lines * (body_font.metrics("linespace") + 3) + 24 + 12
+            + 10 + 34 + 18 + 16
+        )
+
+        self.center_window(window, 560, max(220, min(620, height)))
+
+        window.transient(self)
+
+        tk.Label(
+            window, text=title, bg=wbg, fg=accent,
+            font=(UI_FONT, 14, "bold"), anchor="w", justify="left",
+            wraplength=500
+        ).pack(fill="x", padx=28, pady=(18, 10))
+
+        foot = tk.Frame(window, bg=wbg)
+
+        foot.pack(side="bottom", fill="x", pady=(14, 18))
+
+        panel = mix_color(wbg, "#FFFFFF", 0.05)
+
+        holder = tk.Canvas(
+            window, bg=wbg, highlightthickness=0, bd=0,
+            height=text_lines * (body_font.metrics("linespace") + 3) + 32
+        )
+
+        holder.pack(fill="x", padx=28)
+
+        box = tk.Text(
+            holder, bg=panel, fg=TEXT,
+            relief="flat", bd=0, highlightthickness=0, wrap="word",
+            font=(UI_FONT, 11), padx=4, pady=2, cursor="arrow",
+            spacing3=3
+        )
+
+        inset = holder.create_window(14, 12, window=box, anchor="nw")
+
+        keep = {}
+
+        def paint(event):
+
+            w, h = event.width, event.height
+
+            if w < 40 or h < 40:
+                return
+
+            holder.itemconfigure(inset, width=w - 28, height=h - 24)
+
+            if not HAS_PIL:
+                return
+
+            big = Image.new("RGBA", (w * 4, h * 4), (0, 0, 0, 0))
+
+            ImageDraw.Draw(big).rounded_rectangle(
+                [0, 0, w * 4 - 1, h * 4 - 1], radius=16 * 4, fill=panel
+            )
+
+            keep["bg"] = ImageTk.PhotoImage(
+                big.resize((w, h), Image.LANCZOS)
+            )
+
+            holder.delete("bg")
+
+            holder.create_image(
+                0, 0, anchor="nw", image=keep["bg"], tags="bg"
+            )
+
+            holder.tag_lower("bg")
+
+        holder.bind("<Configure>", paint)
+
+        self.emoji_attach(box)
+        self.emoji_write(box, description)
+
+        box.configure(state="disabled")
+
+        close = self.make_button(
+            foot, "Close", window.destroy, width=10, active=accent
+        )
+
+        close.configure(selected=True)
+
+        close.pack()
+
+        window.bind("<Escape>", lambda e: window.destroy())
+        window.bind("<Return>", lambda e: window.destroy())
+
+        # Final size: exactly what the content asks for, so the space
+        # above and below is the same.
+        # The box is exactly as tall as its text (measured for real), so
+        # the gap above the first line equals the gap below the last.
+        holder.itemconfigure(inset, width=560 - 56 - 28)
+
+        window.update_idletasks()
+
+        # Height from the wrapped line count measured with the real
+        # font (the box can't be measured while the window is hidden).
+        shown_lines = min(
+            12, wrapped(description, body_font, 456)
+        )
+
+        paragraphs = description.count("\n") + 1
+
+        holder.configure(
+            height=(
+                shown_lines * body_font.metrics("linespace")
+                + paragraphs * 3 + 4 + 24 + 6
+            )
+        )
+
+        window.update_idletasks()
+
+        self.center_window(window, 560, min(640, window.winfo_reqheight()))
+
+        window.attributes("-alpha", 0.0)
+
+        window.deiconify()
+
+        window.update_idletasks()
+
+        self._paint_titlebar(window)
+
+        try:
+            window.grab_set()
+        except Exception:
+            pass
+
+        window.after(60, lambda: window.attributes("-alpha", 1.0))
 
     def crop_picture_dialog(self, source_path, aspect=3.1):
         """Lets the user choose which part of a picture a card shows:
@@ -13132,37 +13696,66 @@ class StudesticsApp(tk.Tk):
             "drag": None, "result": None, "photos": []
         }
 
+        # Colours follow the picture: window tinted by its average
+        # colour, accents from its most striking colour.
+        try:
+
+            import colorsys
+
+            r, g, b = shown.resize((1, 1), Image.LANCZOS).getpixel((0, 0))
+
+            wbg = mix_color(BG, "#%02x%02x%02x" % (r, g, b), 0.22)
+
+            accent = _image_accent(shown) or BLUE
+
+            if colorsys.rgb_to_hsv(*(c / 255 for c in _hex_rgb(accent)))[1] < 0.25:
+                accent = BLUE
+
+        except Exception:
+
+            wbg = mix_color(BG, BLUE, 0.07)
+            accent = BLUE
+
         window = tk.Toplevel(self)
         window.title("Choose the part to show")
 
-        tk.Frame(window, bg=PURPLE, height=4).pack(fill="x")
+        # The title bar and border follow the picture's colours too.
+        window._bar_color = wbg
+        window._glow = accent
 
-        self.center_window(window, 700, 540)
+        tk.Frame(window, bg=accent, height=4).pack(fill="x")
 
-        window.configure(bg=BG)
+        self.center_window(
+            window, max(view_w + 56, 620), view_h + 230
+        )
+
+        window.configure(bg=wbg)
         window.transient(self)
         window.grab_set()
 
         tk.Label(
             window, text="Choose the part to show",
-            bg=BG, fg=TEXT, font=(UI_FONT, 14, "bold")
+            bg=wbg, fg=accent, font=(UI_FONT, 14, "bold")
         ).pack(anchor="w", padx=28, pady=(18, 2))
 
         tk.Label(
             window,
-            text="Drag to move the frame. Scroll to zoom in or out.",
-            bg=BG, fg=MUTED
+            text=(
+                "Drag to move the frame. Scroll to zoom in or out. "
+                "This only picks the picture, your task is not saved yet."
+            ),
+            bg=wbg, fg=MUTED, wraplength=max(view_w, 564), justify="left"
         ).pack(anchor="w", padx=28, pady=(0, 10))
 
         canvas = tk.Canvas(
-            window, width=box_w, height=box_h, bg=PANEL,
+            window, width=view_w, height=view_h, bg=wbg,
             highlightthickness=0, bd=0
         )
 
         canvas.pack(padx=28)
 
-        ox = (box_w - view_w) // 2
-        oy = (box_h - view_h) // 2
+        ox = 0
+        oy = 0
 
         def frame_size():
 
@@ -13269,25 +13862,30 @@ class StudesticsApp(tk.Tk):
 
             window.destroy()
 
-        buttons = tk.Frame(window, bg=BG)
+        row = tk.Frame(window, bg=wbg)
 
-        buttons.pack(fill="x", padx=28, pady=(16, 0))
+        row.pack(fill="x", pady=(16, 0))
+
+        buttons = tk.Frame(row, bg=wbg)
+
+        buttons.pack()
 
         use = self.make_button(
-            buttons, "Use this part", lambda: finish("crop"), width=14
+            buttons, "Use this part", lambda: finish("crop"), width=14,
+            active=accent
         )
 
         use.configure(selected=True)
-        use.pack(side="left")
+        use.pack(side="left", padx=6)
 
         self.make_button(
             buttons, "Use whole picture", lambda: finish("whole"),
             width=17
-        ).pack(side="left", padx=8)
+        ).pack(side="left", padx=6)
 
         self.make_button(
             buttons, "Cancel", lambda: finish("cancel"), width=9
-        ).pack(side="left")
+        ).pack(side="left", padx=6)
 
         window.bind("<Return>", lambda e: finish("crop"))
         window.bind("<Escape>", lambda e: finish("cancel"))
@@ -14065,6 +14663,8 @@ class StudesticsApp(tk.Tk):
                     tags="card_text"
                 )
 
+            desc_stack()
+
         def render(event=None):
 
             width = canvas.winfo_width()
@@ -14182,10 +14782,250 @@ class StudesticsApp(tk.Tk):
             base.paste(composited, (0, 0), mask)
 
             state["base"] = base
+            state["mask"] = mask
+            desc["imgs"].clear()
 
             draw_composite()
 
+        # Photo cards hide the description until the mouse is over
+        # the card: a soft dark glow and the words ease in together.
+        desc_text = (
+            " ".join((goal["description"] or "").split())
+            if has_photo else ""
+        )
+
+        if len(desc_text) > 220:
+            desc_text = desc_text[:219].rstrip() + "\u2026"
+
+        desc = {
+            "level": 0.0, "from": 0.0, "target": 0.0, "t0": 0.0,
+            "job": None, "imgs": {}, "built": -1,
+            "glow": None, "text": None, "box": None
+        }
+
+        def desc_wrap(room, max_lines):
+
+            lines, current = [], ""
+
+            for word in desc_text.split(" "):
+
+                # A word wider than the card is broken up.
+                while small_font.measure(word) > room and len(word) > 1:
+
+                    cut = len(word) - 1
+
+                    while cut > 1 and small_font.measure(word[:cut]) > room:
+                        cut -= 1
+
+                    if current:
+                        lines.append(current)
+                        current = ""
+
+                    lines.append(word[:cut])
+                    word = word[cut:]
+
+                trial = (current + " " + word).strip()
+
+                if current and small_font.measure(trial) > room:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = trial
+
+            if current:
+                lines.append(current)
+
+            if len(lines) > max_lines:
+
+                lines = lines[:max_lines]
+                last = lines[-1].rstrip()
+
+                while last and small_font.measure(last + "\u2026") > room:
+                    last = last[:-1]
+
+                lines[-1] = last.rstrip() + "\u2026"
+
+            return lines
+
+        def desc_build():
+
+            from PIL import ImageFilter
+
+            canvas.delete("desc_glow", "desc_txt")
+
+            desc["glow"] = desc["text"] = None
+            desc["built"] = state["width"]
+            desc["imgs"] = {}
+
+            room = max(60, state["width"] - pill_w - pill_margin - 42)
+
+            line_h = small_font.metrics("linespace")
+
+            top = 54
+
+            max_lines = max(1, min(2, (card_height - 44 - top) // line_h))
+
+            lines = desc_wrap(room, max_lines)
+
+            text_w = max(small_font.measure(l) for l in lines)
+            text_h = line_h * len(lines)
+
+            pad = 22
+
+            gw, gh = text_w + pad * 2 + 12, text_h + pad * 2
+
+            mask = Image.new("L", (gw, gh), 0)
+
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [pad, pad, gw - pad, gh - pad], radius=10, fill=255
+            )
+
+            mask = mask.filter(ImageFilter.GaussianBlur(13))
+
+            for q in range(1, 13):
+
+                alpha = mask.point(
+                    lambda v, q=q: int(v * 0.6 * q / 12)
+                )
+
+                layer = Image.new("RGBA", (gw, gh), (6, 6, 12, 255))
+
+                layer.putalpha(alpha)
+
+                desc["imgs"][q] = ImageTk.PhotoImage(layer)
+
+            desc["glow"] = canvas.create_image(
+                18 - pad, top - pad, anchor="nw", image=desc["imgs"][1],
+                tags="desc_glow", state="hidden"
+            )
+
+            desc["box"] = (18, top, 18 + text_w, top + text_h)
+
+            desc["text"] = canvas.create_text(
+                18, top, anchor="nw", text="\n".join(lines),
+                font=small_font, fill="#55555E", tags="desc_txt",
+                state="hidden"
+            )
+
+        def desc_apply():
+
+            if not desc_text or state["base"] is None:
+                return
+
+            if desc["built"] != state["width"]:
+                desc_build()
+
+            level = desc["level"]
+
+            q = round(level * 12)
+
+            if q <= 0:
+
+                canvas.itemconfigure("desc_glow", state="hidden")
+                canvas.itemconfigure("desc_txt", state="hidden")
+
+                return
+
+            canvas.itemconfigure(
+                desc["glow"], image=desc["imgs"][min(12, q)],
+                state="normal"
+            )
+
+            canvas.itemconfigure(
+                desc["text"], state="normal",
+                fill=mix_color("#55555E", "#FFFFFF", level)
+            )
+
+            try:
+                canvas.tag_raise("desc_glow", "card_bg")
+            except Exception:
+                pass
+
+            canvas.tag_raise("desc_txt")
+
+        def desc_stack():
+
+            desc_apply()
+
+        def desc_step():
+
+            desc["job"] = None
+
+            try:
+
+                p = min(1.0, (time.time() - desc["t0"]) / 0.24)
+
+                ease = p * p * (3 - 2 * p)
+
+                desc["level"] = (
+                    desc["from"] + (desc["target"] - desc["from"]) * ease
+                )
+
+                desc_apply()
+
+                if p < 1.0:
+                    desc["job"] = canvas.after(12, desc_step)
+
+            except Exception:
+                pass
+
+        def desc_goto(target):
+
+            if not desc_text or desc["target"] == target:
+                return
+
+            desc["from"] = desc["level"]
+            desc["target"] = target
+            desc["t0"] = time.time()
+
+            if desc["job"] is None:
+                desc["job"] = canvas.after(12, desc_step)
+
+        def desc_hit(x, y):
+            """True if (x, y) is on the visible description."""
+
+            full = (goal["description"] or "").strip()
+
+            if not full:
+                return False
+
+            if has_photo:
+
+                box = desc["box"]
+
+                if not box or desc["level"] < 0.5:
+                    return False
+
+            else:
+
+                room = max(
+                    60, state["width"] - pill_w - pill_margin - 42
+                )
+
+                box = (
+                    18, 50, 18 + room,
+                    50 + small_font.metrics("linespace")
+                )
+
+            return (
+                box[0] - 6 <= x <= box[2] + 6
+                and box[1] - 4 <= y <= box[3] + 4
+            )
+
+        def desc_open():
+
+            self.show_description(
+                goal["title"], (goal["description"] or "").strip(),
+                source_image
+            )
+
         def on_motion(event):
+
+            desc_goto(1.0)
+
+            canvas.configure(
+                cursor="hand2" if desc_hit(event.x, event.y) else ""
+            )
 
             hovered = pill_at(event.x, event.y)
 
@@ -14195,6 +15035,8 @@ class StudesticsApp(tk.Tk):
                 draw_composite()
 
         def on_leave(event):
+
+            desc_goto(0.0)
 
             if state["hover"] is not None:
 
@@ -14207,6 +15049,10 @@ class StudesticsApp(tk.Tk):
 
             if hit is not None:
                 actions[hit]["command"]()
+                return
+
+            if desc_hit(event.x, event.y):
+                desc_open()
 
         canvas.bind("<Configure>", render)
         canvas.bind("<Motion>", on_motion)
@@ -14332,6 +15178,16 @@ class StudesticsApp(tk.Tk):
         )
 
         self.emoji_attach(description)
+
+        # After a paste, scroll so the end of what was pasted (where the
+        # cursor now is) stays in view.
+        description.bind(
+            "<<Paste>>",
+            lambda e: description.after_idle(
+                lambda: description.see("insert")
+            ),
+            add="+"
+        )
 
         if editing:
             self.emoji_write(description, goal["description"] or "")
@@ -15299,6 +16155,160 @@ class StudesticsApp(tk.Tk):
         self.emoji_write(editor, tab_now()["text"])
         editor.edit_reset()
         editor.edit_modified(False)
+
+        # Web links in a note: underlined, glow on hover, click opens.
+        editor.tag_configure("link", underline=True)
+        editor.tag_configure(
+            "linkhover", underline=True, foreground="#FFFFFF",
+            background=mix_color(PANEL_2, PURPLE, 0.45)
+        )
+        editor.tag_raise("linkhover")
+
+        link_state = {"seen": None, "job": None, "hover": False}
+
+        def scan_links(loop=True):
+
+            try:
+
+                if not editor.winfo_exists():
+                    return
+
+                content = editor.get("1.0", "end-1c")
+
+                if content != link_state["seen"]:
+
+                    link_state["seen"] = content
+
+                    editor.tag_remove("link", "1.0", "end")
+                    editor.tag_remove("linkhover", "1.0", "end")
+
+                    count = tk.IntVar()
+                    start = "1.0"
+
+                    while True:
+
+                        hit = editor.search(
+                            r"(https?://|www\.)[^[:space:]<>\"]+",
+                            start, stopindex="end",
+                            regexp=True, nocase=True, count=count
+                        )
+
+                        if not hit or not count.get():
+                            break
+
+                        end = editor.index(f"{hit}+{count.get()}c")
+
+                        found = editor.get(hit, end)
+
+                        trim = len(found) - len(found.rstrip(".,;:!?)]}'"))
+
+                        if trim:
+                            end = editor.index(f"{end}-{trim}c")
+
+                        if len(found) - trim >= 5:
+                            editor.tag_add("link", hit, end)
+
+                        start = end if editor.compare(
+                            end, ">", hit
+                        ) else editor.index(f"{hit}+1c")
+
+                if loop:
+                    editor.after(2000, scan_links)
+
+            except Exception:
+                pass
+
+        def scan_soon(_event=None):
+
+            # Wait until typing pauses, so nothing runs per keystroke.
+            if link_state["job"] is not None:
+                editor.after_cancel(link_state["job"])
+
+            link_state["job"] = editor.after(
+                350, lambda: scan_links(False)
+            )
+
+        editor.bind("<KeyRelease>", scan_soon, add="+")
+
+        def link_range(event):
+
+            index = editor.index(f"@{event.x},{event.y}")
+
+            # Ignore the empty space after the end of a line.
+            box = editor.bbox(index)
+
+            if not box or event.x > box[0] + box[2] + 2:
+                return None
+
+            if "link" not in editor.tag_names(index):
+                return None
+
+            span = editor.tag_prevrange("link", index + "+1c")
+
+            if not span or not editor.compare(span[0], "<=", index):
+                return None
+
+            return span
+
+        def hover_link(event):
+
+            # Moving over plain text must cost almost nothing.
+            if (
+                not link_state["hover"]
+                and not editor.tag_ranges("link")
+            ):
+                return
+
+            span = link_range(event)
+
+            if span:
+
+                if not link_state["hover"]:
+                    editor.tag_add("linkhover", span[0], span[1])
+                    editor.configure(cursor="hand2")
+                    link_state["hover"] = True
+
+            elif link_state["hover"]:
+
+                editor.tag_remove("linkhover", "1.0", "end")
+                editor.configure(cursor="xterm")
+                link_state["hover"] = False
+
+        def leave_link(event):
+
+            link_state["hover"] = False
+            editor.tag_remove("linkhover", "1.0", "end")
+            editor.configure(cursor="xterm")
+
+        def open_link(event):
+
+            # A drag that selected text is not a click.
+            if editor.tag_ranges("sel"):
+                return None
+
+            span = link_range(event)
+
+            if not span:
+                return None
+
+            address = editor.get(span[0], span[1]).strip()
+
+            if address.lower().startswith("www."):
+                address = "https://" + address
+
+            try:
+                import webbrowser
+                webbrowser.open(address)
+            except Exception:
+                pass
+
+            return "break"
+
+        editor.bind("<Motion>", hover_link, add="+")
+        editor.bind("<Leave>", leave_link, add="+")
+        editor.bind("<ButtonRelease-1>", open_link, add="+")
+
+        scan_links()
 
         tk.Label(
             status,
@@ -16272,7 +17282,7 @@ class StudesticsApp(tk.Tk):
 
         editor.bind("<<Modified>>", on_modified)
         editor.bind("<KeyRelease>", update_status, add="+")
-        editor.bind("<ButtonRelease-1>", update_status)
+        editor.bind("<ButtonRelease-1>", update_status, add="+")
         editor.bind("<Control-s>", save)
         editor.bind("<Control-S>", save_as)
         editor.bind("<Control-o>", open_file)
@@ -22219,7 +23229,12 @@ class StudesticsApp(tk.Tk):
                 # A page's title often flashes "YouTube" for a moment
                 # while it loads (even YouTube Music). Only nudge if it's
                 # still there on the next check.
-                if getattr(self, "_nudge_pending", None) != word:
+                exe = window_process_name(foreground_window_handle())
+
+                if (
+                    exe in BROWSER_EXES
+                    and getattr(self, "_nudge_pending", None) != word
+                ):
 
                     self._nudge_pending = word
 
@@ -22542,6 +23557,7 @@ class StudesticsApp(tk.Tk):
                 or not self.nudge_on
                 or not self.nudge_strict
                 or not window_exists(hwnd)
+                or not window_shown(hwnd)
                 or not still_distracting()
             ):
                 finish()
@@ -22565,9 +23581,33 @@ class StudesticsApp(tk.Tk):
             win.attributes("-topmost", True)
             win.lift()
 
-            # Keep keyboard focus here, except while Task Manager is
-            # in front, so it can always be used.
-            if "task manager" not in foreground_window_title().lower():
+            # Pop-ups from Studestics itself (an overdue task, an
+            # alarm) must stay above this block so they can be answered.
+            others = []
+
+            for child in self.winfo_children():
+
+                try:
+
+                    if (
+                        isinstance(child, tk.Toplevel)
+                        and child is not win
+                        and child.winfo_exists()
+                        and child.winfo_viewable()
+                    ):
+                        others.append(child)
+                        child.attributes("-topmost", True)
+                        child.lift()
+
+                except Exception:
+                    pass
+
+            # Keep keyboard focus here, except while Task Manager or a
+            # Studestics pop-up is in front, so they can always be used.
+            if (
+                not others
+                and "task manager" not in foreground_window_title().lower()
+            ):
 
                 try:
                     win.focus_force()
@@ -30172,6 +31212,8 @@ class StudesticsApp(tk.Tk):
 
         self._model_menu_closer = lambda: close_menu(False)
 
+        self._menus_close_when_inactive()
+
         if not getattr(self, "_model_wheel_bound", False):
 
             self._model_wheel_bound = True
@@ -32748,6 +33790,8 @@ class StudesticsApp(tk.Tk):
             win.deiconify()
             win.lift()
 
+            self._round_popup(win)
+
             menu["win"] = win
 
             def grow(i=1):
@@ -32791,6 +33835,8 @@ class StudesticsApp(tk.Tk):
         if not getattr(self, "_font_menu_bound", False):
 
             self._font_menu_bound = True
+
+            self._menus_close_when_inactive()
 
             def inside(widget, x, y):
 
@@ -34081,6 +35127,16 @@ class StudesticsApp(tk.Tk):
             dl = deadline_dt(task["deadline"])
 
             if dl is None:
+                continue
+
+            # A task with a one-time reminder gets that single pop-up
+            # and nothing else (no 'due soon' or 'deadline reached').
+            try:
+                has_once = bool(task["remind_at"])
+            except (KeyError, IndexError):
+                has_once = False
+
+            if has_once:
                 continue
 
             secs = (dl - now).total_seconds()
