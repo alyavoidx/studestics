@@ -60,7 +60,7 @@ jobs:
       - name: Build exe
         run: >
           pyinstaller --onefile --noconsole --name Studestics
-          --version-file version_info.txt Studestics.py
+          --version-file version_info.txt --add-data "twemoji.zip;." Studestics.py
 
       - id: upload
         uses: actions/upload-artifact@v4
