@@ -10,6 +10,8 @@ import math
 import queue
 import random
 import gc
+import io
+import zipfile
 from pathlib import Path
 from datetime import datetime, date, timedelta
 
@@ -33,6 +35,7 @@ class _ThemedMessageBox:
 
             return getattr(_native_messagebox, {
                 "ask": "askyesno",
+                "ask3": "askyesnocancel",
                 "info": "showinfo",
                 "warning": "showwarning",
                 "error": "showerror"
@@ -44,6 +47,10 @@ class _ThemedMessageBox:
 
     def askyesno(self, title, message, **kwargs):
         return self._show("ask", title, message, **kwargs)
+
+    def askyesnocancel(self, title, message, **kwargs):
+        # True = yes, False = no, None = cancel
+        return self._show("ask3", title, message, **kwargs)
 
     def showinfo(self, title, message, **kwargs):
         return self._show("info", title, message, **kwargs)
@@ -77,7 +84,7 @@ APP_NAME = "Studestics"
 
 # Bump VERSION for every release you publish on GitHub; the app compares
 # it with the newest release tag (v1.0.1, v1.1.0 ...) of UPDATE_REPO.
-VERSION = "1.6.97"
+VERSION = "1.7.0"
 UPDATE_REPO = "alyavoidx/studestics"
 
 APP_DIR = Path.home() / ".studestics"
@@ -212,6 +219,17 @@ THEMES = {
         "panel2": "#143042", "border": "#1F4A60", "text": "#E9F8FF",
         "muted": "#93B8CB", "muted2": "#5E8499",
         "accent": "#38A3D8", "accent_hover": "#6CC4F0"
+    },
+    "Neon": {
+        "bg": "#030405", "sidebar": "#06080A", "panel": "#0A0D11",
+        "panel2": "#11161C", "border": "#232C36", "text": "#EAF4FF",
+        "muted": "#7D8997", "muted2": "#4C5661",
+        "accent": "#CFE3F7", "accent_hover": "#FFFFFF",
+        "logo_from": (140, 168, 196), "logo_to": (244, 250, 255),
+        "font": "Share Tech Mono", "font_file": "ShareTechMono-Regular.ttf",
+        "glow": "#8CCBFF",
+        "green": "#9CF5D0", "red": "#FF7083",
+        "yellow": "#FFE08A", "blue": "#9CD2FF"
     }
 }
 
@@ -484,6 +502,54 @@ THEME_NAME = _read_theme_name()
 
 _THEME = THEMES[THEME_NAME]
 
+# The font the user picked in Settings (a theme's own font never
+# replaces a choice they made).
+_FONT_SETTING = UI_FONT
+_THEME_FONT_PATH = None
+
+def _find_font_file(filename):
+    """A font file that ships with the program (next to it, in a
+    fonts folder, or inside the packaged exe), or None."""
+
+    if not filename:
+        return None
+
+    bases = []
+
+    try:
+
+        if getattr(sys, "_MEIPASS", None):
+            bases.append(Path(sys._MEIPASS))
+
+        bases.append(Path(__file__).parent)
+        bases.append(Path(sys.executable).parent)
+
+        for base in bases:
+
+            for sub in ("", "fonts"):
+
+                file = base / sub / filename
+
+                if file.is_file():
+                    return file
+
+    except Exception:
+        pass
+
+    return None
+
+
+if _THEME.get("font") and UI_FONT in (DEFAULT_FONT, _THEME["font"]):
+
+    # A theme can bring its own typeface. It is used when the font
+    # file is there and loads.
+    _file = _find_font_file(_THEME.get("font_file", ""))
+
+    if _file is not None and register_font_file(_file):
+
+        UI_FONT = _THEME["font"]
+        _THEME_FONT_PATH = _file
+
 BG = _THEME["bg"]
 SIDEBAR = _THEME["sidebar"]
 PANEL = _THEME["panel"]
@@ -497,6 +563,36 @@ MUTED_2 = _THEME["muted2"]
 PURPLE = _THEME["accent"]
 PURPLE_HOVER = _THEME["accent_hover"]
 PURPLE_LIGHT = _theme_mix(PURPLE_HOVER, "#FFFFFF", 0.25)
+
+
+def _readable_on(colour, light="#FFFFFF", dark=None):
+    """Text colour that stays readable on `colour`: white normally,
+    the background colour when `colour` is very light."""
+
+    try:
+        r, g, b = _theme_rgb(colour)
+        if 0.299 * r + 0.587 * g + 0.114 * b > 200:
+            return dark or BG
+    except Exception:
+        pass
+
+    return light
+
+
+# Selection colour: the accent itself, except when the accent is very
+# light (Neon). Then it becomes a soft, see-through-looking tint of the
+# accent over the editor background, and the text keeps its own colour.
+_SOFT_SELECT = _readable_on(PURPLE) != "#FFFFFF"
+
+# Very light accent (Neon): a bright, soft white highlight with dark
+# text, like a lit-up terminal selection.
+_SELECT_TINT = _theme_mix(PANEL_2, "#FFFFFF", 0.84)
+
+SELECT_BG = _SELECT_TINT if _SOFT_SELECT else PURPLE
+SELECT_FG = BG if _SOFT_SELECT else "#FFFFFF"
+
+SELECT_BG_HOVER = _SELECT_TINT if _SOFT_SELECT else PURPLE_HOVER
+SELECT_FG_HOVER = BG if _SOFT_SELECT else TEXT
 
 IS_LIGHT = bool(_THEME.get("light"))
 
@@ -3835,6 +3931,140 @@ _EMOJI_FONT_PATHS = (
 
 _EMOJI_CACHE = {}
 
+# Twemoji (https://github.com/jdecked/twemoji, graphics CC-BY 4.0):
+# the emoji pictures ship in twemoji.zip next to the program.
+_TWEMOJI = {"zip": None, "names": set(), "tried": False}
+_TWEMOJI_LOCK = threading.Lock()
+
+
+def _twemoji_open():
+
+    with _TWEMOJI_LOCK:
+
+        if _TWEMOJI["tried"]:
+            return _TWEMOJI["zip"]
+
+        _TWEMOJI["tried"] = True
+
+        bases = []
+
+        if getattr(sys, "_MEIPASS", None):
+            bases.append(Path(sys._MEIPASS))
+
+        try:
+            bases.append(Path(__file__).parent)
+        except Exception:
+            pass
+
+        bases.append(Path(sys.executable).parent)
+
+        for base in bases:
+
+            path = base / "twemoji.zip"
+
+            try:
+
+                if path.exists():
+
+                    archive = zipfile.ZipFile(path)
+
+                    _TWEMOJI["names"] = set(archive.namelist())
+                    _TWEMOJI["zip"] = archive
+
+                    break
+
+            except Exception:
+                pass
+
+        return _TWEMOJI["zip"]
+
+
+def _twemoji_png(cluster):
+    """The Twemoji picture (PIL RGBA) for an emoji, or None."""
+
+    archive = _twemoji_open()
+
+    if archive is None:
+        return None
+
+    codes = [f"{ord(ch):x}" for ch in cluster]
+
+    full = "-".join(codes)
+    bare = "-".join(c for c in codes if c != "fe0f")
+
+    # Twemoji names drop the emoji marker (fe0f) unless the emoji is a
+    # joined sequence.
+    order = [full, bare] if "200d" in codes else [bare, full]
+
+    for name in order:
+
+        if name + ".png" in _TWEMOJI["names"]:
+
+            try:
+
+                with _TWEMOJI_LOCK:
+                    data = archive.read(name + ".png")
+
+                return Image.open(io.BytesIO(data)).convert("RGBA")
+
+            except Exception:
+                return None
+
+    return None
+
+
+def _load_emoji_pack():
+    """Replace the short built-in emoji list with every emoji in the
+    Twemoji pack (emoji.json inside twemoji.zip), so the picker and
+    the :name shortcuts know all of them."""
+
+    archive = _twemoji_open()
+
+    if archive is None or "emoji.json" not in _TWEMOJI["names"]:
+        return
+
+    import json
+
+    with _TWEMOJI_LOCK:
+        data = json.loads(archive.read("emoji.json").decode("utf-8"))
+
+    categories = []
+
+    for group in data["groups"]:
+
+        chars = [item[0] for item in group["items"]]
+
+        categories.append(
+            (group["icon"], group["name"], " ".join(chars))
+        )
+
+        for char, label, tags in group["items"]:
+
+            key = label.lower().replace(" ", "_").replace("-", "_")
+            key = key.replace(":", "").replace(",", "").replace("'", "")
+            key = key.replace(".", "").replace("&", "and")
+
+            if key and key not in EMOJI_SHORTCODES:
+                EMOJI_SHORTCODES[key] = char
+
+            for tag in tags:
+
+                tag = tag.lower().replace(" ", "_").replace("-", "_")
+
+                if tag and tag not in EMOJI_SHORTCODES:
+                    EMOJI_SHORTCODES[tag] = char
+
+    if categories:
+        EMOJI_CATEGORIES[:] = categories
+
+    EMOJI_NAMES[:] = list(EMOJI_SHORTCODES)
+
+
+try:
+    _load_emoji_pack()
+except Exception:
+    pass
+
 
 def emoji_segments(text):
     """[(piece, is_emoji), ...] for a string."""
@@ -3874,6 +4104,39 @@ def emoji_image(cluster, size):
     result = None
 
     if HAS_PIL:
+
+        glyph = None
+
+        try:
+            glyph = _twemoji_png(cluster)
+        except Exception:
+            glyph = None
+
+        if glyph is not None:
+
+            inner = max(1, size - 2)
+
+            scale = min(inner / glyph.width, inner / glyph.height)
+
+            glyph = glyph.resize(
+                (
+                    max(1, int(glyph.width * scale)),
+                    max(1, int(glyph.height * scale))
+                ),
+                Image.LANCZOS
+            )
+
+            tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+            tile.paste(
+                glyph,
+                ((size - glyph.width) // 2, (size - glyph.height) // 2),
+                glyph
+            )
+
+            _EMOJI_CACHE[key] = tile
+
+            return tile
 
         for path in _EMOJI_FONT_PATHS:
 
@@ -4225,6 +4488,507 @@ def set_startup(enabled):
 
 _LOGO_CACHE = {}
 
+_LOGO_BLOB_B64 = (
+    "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"
+)
+
 
 def _catmull_rom(points, per=24):
     """A smooth curve through the given points."""
@@ -4531,6 +5295,14 @@ class RoundedButton:
             bg_color, fg_color = PANEL_2, MUTED_2
         elif self.selected or self.hovered or self.kb:
             bg_color, fg_color = self.active_color, "#FFFFFF"
+
+            # Very light button colours (the Neon theme) take dark text.
+            try:
+                r_, g_, b_ = _theme_rgb(bg_color)
+                if 0.299 * r_ + 0.587 * g_ + 0.114 * b_ > 200:
+                    fg_color = BG
+            except Exception:
+                pass
         else:
             bg_color, fg_color = (
                 getattr(self, "idle_color", None) or PANEL_2
@@ -5011,6 +5783,14 @@ class StudesticsApp(tk.Tk):
 
         super().__init__()
 
+        # Every text box and entry uses the theme's selection colours
+        # (otherwise the AI chat and other boxes fall back to the
+        # Windows highlight, which clashes and can hide the text).
+        for kind in ("Text", "Entry"):
+            self.option_add(f"*{kind}.selectBackground", SELECT_BG)
+            self.option_add(f"*{kind}.selectForeground", SELECT_FG)
+            self.option_add(f"*{kind}.inactiveSelectBackground", SELECT_BG)
+
         # Started by Windows at sign-in: hide the window the moment it
         # exists, so nothing (not even a taskbar button) shows while
         # the app loads. It then sits quietly in the tray.
@@ -5066,6 +5846,8 @@ class StudesticsApp(tk.Tk):
         messagebox.app = self
 
         self._set_app_icon()
+
+        self.after(5000, self._sync_shortcut_icons)
 
         self.title(APP_NAME)
 
@@ -5720,6 +6502,92 @@ class StudesticsApp(tk.Tk):
 
         win.after(120, grab_focus)
 
+    def _watch_window_state(self):
+        """When the window jumps size (maximise / restore), cover it
+        with a plain panel while the content re-lays out, then reveal
+        it finished, so no half-drawn panels are ever seen."""
+
+        seen = {"state": None, "size": None, "job": None, "cover": None}
+
+        def uncover():
+
+            seen["job"] = None
+
+            try:
+                self.update()
+            except Exception:
+                pass
+
+            cover = seen["cover"]
+
+            if cover is not None:
+
+                try:
+                    cover.place_forget()
+                except Exception:
+                    pass
+
+        def show_cover():
+
+            try:
+
+                if seen["cover"] is None:
+                    seen["cover"] = tk.Frame(self, bg=BG)
+
+                seen["cover"].place(x=0, y=0, relwidth=1, relheight=1)
+                seen["cover"].lift()
+
+            except Exception:
+                pass
+
+        def changed(event):
+
+            if event.widget is not self:
+                return
+
+            try:
+                state = self.state()
+            except Exception:
+                return
+
+            size = (event.width, event.height)
+            previous = seen["size"]
+
+            jump = (
+                previous is not None
+                and (
+                    abs(size[0] - previous[0]) > 160
+                    or abs(size[1] - previous[1]) > 160
+                )
+            )
+
+            toggled = (
+                seen["state"] in ("zoomed", "normal")
+                and state in ("zoomed", "normal")
+                and state != seen["state"]
+            )
+
+            seen["state"] = state
+            seen["size"] = size
+
+            if not (jump or toggled) or getattr(
+                self, "startup_screen", None
+            ) is not None:
+                return
+
+            show_cover()
+
+            if seen["job"] is not None:
+
+                try:
+                    self.after_cancel(seen["job"])
+                except Exception:
+                    pass
+
+            seen["job"] = self.after(320, uncover)
+
+        self.bind("<Configure>", changed, add="+")
+
     def finish_startup(self):
 
         if not self.initialized:
@@ -5732,11 +6600,18 @@ class StudesticsApp(tk.Tk):
 
         self._paint_titlebar(self)
 
+        # Not on a silent start: changing the state of the hidden window
+        # would pop it onto the taskbar for a moment.
         try:
-            if self.db.get_setting("window_state", "normal") == "zoomed":
+            if (
+                "--background" not in sys.argv
+                and self.db.get_setting("window_state", "normal") == "zoomed"
+            ):
                 self.state("zoomed")
         except Exception:
             pass
+
+        self._watch_window_state()
 
         self._first_page_fade()
 
@@ -5787,6 +6662,11 @@ class StudesticsApp(tk.Tk):
 
                 # First run, or no tray available: show the window.
                 self.deiconify()
+
+        # The tray icon is there from the start, not only after the
+        # window is closed.
+        if profile is not None:
+            self.after(2500, self._tray_watch)
 
         if profile is None:
 
@@ -5843,49 +6723,83 @@ class StudesticsApp(tk.Tk):
         # Keep clear_page from destroying the splash.
         self.startup_screen = None
 
-        def reveal():
+        def fade_splash(done):
 
-            try:
-                self.show_page("Dashboard")
-                self.update_idletasks()
-                screen.lift()
-            except Exception:
-                pass
-
-            lift_away()
-
-        def lift_away(i=0, steps=22):
-
+            # Fades the intro's own logo and words into the background
+            # colour (no window transparency, which can make the whole
+            # window disappear), then hands over to the Dashboard.
             try:
 
-                height = max(1, self.winfo_height())
+                if self._splash_job:
+                    self.after_cancel(self._splash_job)
 
-                t = i / steps
+                self._splash_job = None
 
-                eased = t * t * (3 - 2 * t)
+                canvas = self._splash
+                state = self._splash_state
 
-                screen.place(
-                    x=0,
-                    y=-int(height * eased),
-                    relwidth=1,
-                    relheight=1
-                )
+                for name in ("status", "error"):
+                    canvas.itemconfigure(state[name], state="hidden")
 
-                screen.lift()
+                starts = {
+                    name: canvas.itemcget(state[name], "fill")
+                    for name in ("title", "sub")
+                }
 
             except Exception:
 
-                self._remove_splash(screen)
+                done()
 
                 return
 
-            if i < steps:
+            began = time.time()
 
-                self.after(14, lambda: lift_away(i + 1, steps))
+            def step():
 
-            else:
+                try:
 
-                self._remove_splash(screen)
+                    t = min(1.0, (time.time() - began) / 0.28)
+
+                    for name, colour in starts.items():
+                        canvas.itemconfigure(
+                            state[name], fill=mix_color(colour, BG, t)
+                        )
+
+                    key = max(0, min(20, int(round((1 - t) * 20))))
+
+                    if key in self._splash_photos:
+                        canvas.itemconfigure(
+                            state["image"], image=self._splash_photos[key]
+                        )
+
+                except Exception:
+
+                    done()
+
+                    return
+
+                if t < 1.0:
+                    self.after(12, step)
+                else:
+                    done()
+
+            step()
+
+        def reveal():
+
+            def handover():
+
+                try:
+
+                    self.show_page("Dashboard")
+                    self.update_idletasks()
+                    self._remove_splash(screen)
+                    self.update()
+
+                except Exception:
+                    pass
+
+            fade_splash(handover)
 
         wait = max(
             0,
@@ -6974,7 +7888,7 @@ class StudesticsApp(tk.Tk):
         """Dark, rounded-button replacement for the Windows message
         boxes. Returns True/False for questions, None for notices."""
 
-        result = {"value": False}
+        result = {"value": None if kind == "ask3" else False}
 
         danger = kind == "ask" and title.split(" ")[0] in (
             "Delete", "Clear", "Remove"
@@ -6984,14 +7898,16 @@ class StudesticsApp(tk.Tk):
             "error": RED,
             "warning": YELLOW,
             "info": PURPLE_HOVER,
-            "ask": RED if danger else PURPLE_HOVER
+            "ask": RED if danger else PURPLE_HOVER,
+            "ask3": PURPLE_HOVER
         }[kind]
 
         kicker = {
             "error": "Error",
             "warning": "Warning",
             "info": "Notice",
-            "ask": "Please confirm"
+            "ask": "Please confirm",
+            "ask3": "Unsaved changes"
         }[kind]
 
         shell = self._alert_shell(
@@ -7014,7 +7930,35 @@ class StudesticsApp(tk.Tk):
                 pass
             window.destroy()
 
-        if kind == "ask":
+        if kind == "ask3":
+
+            self.make_button(
+                buttons,
+                "Cancel",
+                lambda: finish(None),
+                width=10
+            ).pack(side="left", padx=4)
+
+            self.make_button(
+                buttons,
+                "Don't save",
+                lambda: finish(False),
+                width=10
+            ).pack(side="left", padx=4)
+
+            save_btn = self.make_button(
+                buttons,
+                "Save",
+                lambda: finish(True),
+                width=10,
+                active=PURPLE_HOVER
+            )
+
+            save_btn.configure(selected=True)
+
+            save_btn.pack(side="left", padx=4)
+
+        elif kind == "ask":
 
             yes_text = {
                 "Delete": "Delete",
@@ -7056,9 +8000,11 @@ class StudesticsApp(tk.Tk):
 
             window.bind("<Return>", lambda e: finish(True))
 
-        window.bind("<Escape>", lambda e: finish(False))
+        cancel_value = None if kind == "ask3" else False
 
-        window.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        window.bind("<Escape>", lambda e: finish(cancel_value))
+
+        window.protocol("WM_DELETE_WINDOW", lambda: finish(cancel_value))
 
         self._alert_show(shell)
 
@@ -7070,7 +8016,7 @@ class StudesticsApp(tk.Tk):
 
         self.wait_window(window)
 
-        return result["value"] if kind == "ask" else None
+        return result["value"] if kind in ("ask", "ask3") else None
 
     def center_window(
         self,
@@ -7201,6 +8147,48 @@ class StudesticsApp(tk.Tk):
             pady=28
         )
 
+    def glow_title_image(self, text, size):
+        """The heading drawn with a soft neon halo (themes with a
+        "glow" colour): the text is blurred into a glow, then drawn
+        sharp on top."""
+
+        scale = self.winfo_fpixels("1i") / 72.0
+
+        font = ImageFont.truetype(
+            str(_THEME_FONT_PATH), max(10, int(size * scale))
+        )
+
+        pad = 12
+
+        left, top, right, bottom = font.getbbox(text)
+
+        w = right - left + pad * 2
+        h = bottom - top + pad * 2
+
+        mask = Image.new("L", (w, h), 0)
+
+        ImageDraw.Draw(mask).text(
+            (pad - left, pad - top), text, font=font, fill=255,
+        )
+
+        base = Image.new("RGB", (w, h), _theme_rgb(BG))
+
+        halo = Image.new("RGB", (w, h), _theme_rgb(_THEME["glow"]))
+
+        for radius, strength in ((7, 0.42), (2, 0.28)):
+
+            soft = mask.filter(ImageFilter.GaussianBlur(radius))
+
+            base.paste(
+                halo, mask=soft.point(lambda v, k=strength: int(v * k))
+            )
+
+        base.paste(
+            Image.new("RGB", (w, h), _theme_rgb(TEXT)), mask=mask
+        )
+
+        return ImageTk.PhotoImage(base)
+
     def page_header(
         self,
         title,
@@ -7217,15 +8205,36 @@ class StudesticsApp(tk.Tk):
             pady=(0, 24)
         )
 
-        tk.Label(
-            header,
-            text=title,
-            bg=BG,
-            fg=TEXT,
-            font=(UI_FONT, 25, "bold")
-        ).pack(
-            anchor="w"
-        )
+        glowing = None
+
+        if _THEME.get("glow") and _THEME_FONT_PATH is not None:
+
+            try:
+                glowing = self.glow_title_image(title, 25)
+            except Exception:
+                glowing = None
+
+        if glowing is not None:
+
+            glow_label = tk.Label(
+                header, image=glowing, bg=BG, bd=0
+            )
+
+            glow_label.image = glowing
+
+            glow_label.pack(anchor="w")
+
+        else:
+
+            tk.Label(
+                header,
+                text=title,
+                bg=BG,
+                fg=TEXT,
+                font=(UI_FONT, 25, "bold")
+            ).pack(
+                anchor="w"
+            )
 
         if subtitle:
 
@@ -7572,11 +8581,18 @@ class StudesticsApp(tk.Tk):
 
             base = None
 
+            # A picture with a see-through background is cut to the circle
+            # with no filled backdrop behind it.
+            cutout = None
+
             if photo_path and Path(photo_path).exists():
 
                 try:
 
-                    pic = Image.open(photo_path).convert("RGB")
+                    pic = Image.open(photo_path).convert("RGBA")
+
+                    if pic.getchannel("A").getextrema()[0] < 250:
+                        cutout = True
 
                     side = min(pic.size)
 
@@ -7590,6 +8606,15 @@ class StudesticsApp(tk.Tk):
                         Image.LANCZOS
                     )
 
+                    if cutout:
+                        # Clipped to the circle, with the picture's own
+                        # see-through parts staying see-through.
+                        mask = ImageChops.multiply(
+                            mask, base.getchannel("A")
+                        )
+
+                    base = base.convert("RGB")
+
                 except Exception:
 
                     base = None
@@ -7598,9 +8623,31 @@ class StudesticsApp(tk.Tk):
 
                 base = Image.new("RGB", (size * sc, size * sc), PURPLE)
 
-            img = Image.new("RGB", (size * sc, size * sc), bg)
+            if cutout and base is not None:
+                img = base.convert("RGBA")
+                img.putalpha(mask)
 
-            img.paste(base, (0, 0), mask)
+                # A clean white outline around the circle.
+                big_px = size * sc
+                ring_w = max(2, int(big_px * 0.035))
+                circle_mask = Image.new("L", (big_px, big_px), 0)
+                ImageDraw.Draw(circle_mask).ellipse(
+                    [0, 0, big_px - 1, big_px - 1], fill=255
+                )
+                inner = Image.new("L", (big_px, big_px), 0)
+                ImageDraw.Draw(inner).ellipse(
+                    [ring_w, ring_w, big_px - 1 - ring_w,
+                     big_px - 1 - ring_w], fill=255
+                )
+                ring = ImageChops.subtract(circle_mask, inner)
+                glow_rgb = (255, 255, 255)
+                edge = Image.new("RGBA", (big_px, big_px), glow_rgb + (0,))
+                edge.putalpha(ring)
+                img.alpha_composite(edge)
+            else:
+                img = Image.new("RGB", (size * sc, size * sc), bg)
+
+                img.paste(base, (0, 0), mask)
 
             circle = ImageTk.PhotoImage(
                 img.resize((size, size), Image.LANCZOS)
@@ -10464,7 +11511,7 @@ class StudesticsApp(tk.Tk):
 
         strip = tk.Frame(parent, bg=BG)
 
-        strip.pack(side="right")
+        strip.pack(side="right", padx=(0, 8))
 
         tk.Label(
             strip,
@@ -10509,7 +11556,7 @@ class StudesticsApp(tk.Tk):
                 font=(UI_FONT, 10)
             )
 
-            value.pack(side="left", padx=(10, 0))
+            value.pack(side="left", padx=(10, 6))
 
             labels[name] = value
 
@@ -10555,7 +11602,10 @@ class StudesticsApp(tk.Tk):
                     except (KeyError, IndexError):
                         pass
 
-                    last = self._reminder_last.get(task["id"], now)
+                    last = self._reminder_last.get(task["id"])
+
+                    if last is None:
+                        last = self._reminder_start(task, now)
 
                     remaining = (
                         last + self._effective_interval(task) - now
@@ -16106,7 +17156,8 @@ class StudesticsApp(tk.Tk):
         tab_state = {
             "hover": None, "close_hover": False, "plus_hover": False,
             "alpha": {}, "job": None, "layout": [], "plus": None,
-            "imgs": [], "shapes": {}, "grow": {}, "grow_job": None, "ghosts": []
+            "imgs": [], "shapes": {}, "grow": {}, "grow_job": None, "ghosts": [],
+            "drag": None, "press": None, "slide": {}, "slide_job": None
         }
 
         name_var = tk.StringVar()
@@ -16131,8 +17182,8 @@ class StudesticsApp(tk.Tk):
             bg=PANEL_2,
             fg=TEXT,
             insertbackground=TEXT,
-            selectbackground=PURPLE,
-            selectforeground="#FFFFFF",
+            selectbackground=SELECT_BG,
+            selectforeground=SELECT_FG,
             relief="flat",
             bd=0,
             highlightthickness=0,
@@ -16158,13 +17209,100 @@ class StudesticsApp(tk.Tk):
 
         # Web links in a note: underlined, glow on hover, click opens.
         editor.tag_configure("link", underline=True)
+        # On hover the link's words take the theme's accent colour,
+        # fading in and out (no highlight box).
         editor.tag_configure(
-            "linkhover", underline=True, foreground="#FFFFFF",
-            background=mix_color(PANEL_2, PURPLE, 0.45)
+            "linkhover", underline=True, font=("Consolas", 12, "bold")
         )
         editor.tag_raise("linkhover")
 
-        link_state = {"seen": None, "job": None, "hover": False}
+        link_state = {
+            "seen": None, "job": None, "hover": False,
+            "level": 0.0, "target": 0.0, "fade": None
+        }
+
+        def link_log():
+
+            # Keep a trace so a hover problem can be diagnosed.
+            try:
+                import traceback, tempfile
+                with open(
+                    os.path.join(
+                        tempfile.gettempdir(), "studestics-link.log"
+                    ), "a", encoding="utf-8"
+                ) as fh:
+                    fh.write(traceback.format_exc() + "\n")
+            except Exception:
+                pass
+
+        def dbg(text):
+
+            try:
+                import tempfile, time
+                with open(
+                    os.path.join(
+                        tempfile.gettempdir(), "studestics-link.log"
+                    ), "a", encoding="utf-8"
+                ) as fh:
+                    fh.write(time.strftime("%H:%M:%S ") + text + "\n")
+            except Exception:
+                pass
+
+        def link_glow():
+
+            # A colour that clearly differs from the note's text: the
+            # theme accent, or its hover shade, or a dimmed text colour
+            # when the theme's accents are too close to the text.
+            def far(c1, c2):
+                r1, g1, b1 = _hex_rgb(c1)
+                r2, g2, b2 = _hex_rgb(c2)
+                return abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
+
+            for candidate in (PURPLE, PURPLE_HOVER):
+                if far(candidate, TEXT) >= 150:
+                    return candidate
+
+            return max(
+                (PURPLE, PURPLE_HOVER, mix_color(TEXT, PANEL_2, 0.55)),
+                key=lambda c: far(c, TEXT)
+            )
+
+        def fade_step():
+
+            link_state["fade"] = None
+
+            try:
+
+                gap = link_state["target"] - link_state["level"]
+
+                if abs(gap) < 0.06:
+                    link_state["level"] = link_state["target"]
+                else:
+                    link_state["level"] += gap * 0.3
+
+                editor.tag_configure(
+                    "linkhover",
+                    foreground=mix_color(
+                        TEXT, link_glow(),
+                        link_state["level"]
+                    )
+                )
+
+                if link_state["level"] <= 0.0 and link_state["target"] == 0:
+                    editor.tag_remove("linkhover", "1.0", "end")
+
+                elif link_state["level"] != link_state["target"]:
+                    link_state["fade"] = editor.after(14, fade_step)
+
+            except Exception:
+                link_log()
+
+        def fade_to(target):
+
+            link_state["target"] = target
+
+            if link_state["fade"] is None:
+                link_state["fade"] = editor.after(14, fade_step)
 
         def scan_links(loop=True):
 
@@ -16264,20 +17402,37 @@ class StudesticsApp(tk.Tk):
             if span:
 
                 if not link_state["hover"]:
+
+                    editor.tag_remove("linkhover", "1.0", "end")
+                    link_state["level"] = 0.85
+                    editor.tag_configure(
+                        "linkhover",
+                        foreground=mix_color(TEXT, link_glow(), 0.85)
+                    )
                     editor.tag_add("linkhover", span[0], span[1])
+                    editor.tag_raise("linkhover")
                     editor.configure(cursor="hand2")
+
                     link_state["hover"] = True
+
+                    fade_to(1.0)
 
             elif link_state["hover"]:
 
-                editor.tag_remove("linkhover", "1.0", "end")
                 editor.configure(cursor="xterm")
+
                 link_state["hover"] = False
+
+                fade_to(0.0)
 
         def leave_link(event):
 
-            link_state["hover"] = False
-            editor.tag_remove("linkhover", "1.0", "end")
+            if link_state["hover"]:
+
+                link_state["hover"] = False
+
+                fade_to(0.0)
+
             editor.configure(cursor="xterm")
 
         def open_link(event):
@@ -16304,8 +17459,94 @@ class StudesticsApp(tk.Tk):
 
             return "break"
 
-        editor.bind("<Motion>", hover_link, add="+")
-        editor.bind("<Leave>", leave_link, add="+")
+        class _Pt:
+            pass
+
+        link_state["span"] = None
+        link_state["cursor"] = False
+
+        def link_tick():
+
+            # One loop does everything: finds the link under the mouse,
+            # eases the colour in or out, and clears it when it is done.
+            try:
+
+                if not editor.winfo_exists():
+                    return
+
+                span = None
+
+                if editor.tag_ranges("link"):
+
+                    px, py = editor.winfo_pointerxy()
+
+                    if editor.winfo_containing(px, py) is editor:
+
+                        pt = _Pt()
+                        pt.x = px - editor.winfo_rootx()
+                        pt.y = py - editor.winfo_rooty()
+
+                        found = link_range(pt)
+
+                        if found:
+                            span = (str(found[0]), str(found[1]))
+
+                if span:
+
+                    if (
+                        link_state["span"] != span
+                        or not editor.tag_ranges("linkhover")
+                    ):
+
+                        editor.tag_remove("linkhover", "1.0", "end")
+                        editor.tag_add("linkhover", span[0], span[1])
+                        editor.tag_raise("linkhover")
+
+                        if link_state["span"] != span:
+                            link_state["level"] = 0.0
+
+                        link_state["span"] = span
+
+                target = 1.0 if span else 0.0
+                level = link_state["level"]
+                gap = target - level
+
+                if abs(gap) < 0.05:
+                    level = target
+                else:
+                    level += gap * 0.3
+
+                if level != link_state["level"] or span:
+
+                    link_state["level"] = level
+
+                    if link_state["span"]:
+                        editor.tag_configure(
+                            "linkhover",
+                            foreground=mix_color(TEXT, link_glow(), level)
+                        )
+
+                if not span and level <= 0.0 and link_state["span"]:
+
+                    editor.tag_remove("linkhover", "1.0", "end")
+                    link_state["span"] = None
+
+                if bool(span) != link_state["cursor"]:
+
+                    link_state["cursor"] = bool(span)
+                    editor.configure(
+                        cursor="hand2" if span else "xterm"
+                    )
+
+            except Exception:
+                link_log()
+
+            try:
+                editor.after(25, link_tick)
+            except Exception:
+                pass
+
+        link_tick()
         editor.bind("<ButtonRelease-1>", open_link, add="+")
 
         scan_links()
@@ -16607,11 +17848,32 @@ class StudesticsApp(tk.Tk):
             top = 2
             x = 2
 
-            for index, tab in enumerate(tabs):
+            drag = tab_state["drag"]
 
-                for ghost in tab_state["ghosts"]:
-                    if ghost["pos"] == index:
-                        x += draw_ghost(ghost, x, height, top)
+            if drag is not None and drag["id"] not in [
+                t["id"] for t in tabs
+            ]:
+                drag = tab_state["drag"] = None
+
+            dragging = drag is not None and drag["moved"]
+
+            if dragging:
+                sequence = [
+                    i for i in drag["order"] if 0 <= i < len(tabs)
+                ]
+            else:
+                sequence = list(range(len(tabs)))
+
+            moving = False
+
+            for index in sequence:
+
+                tab = tabs[index]
+
+                if not dragging:
+                    for ghost in tab_state["ghosts"]:
+                        if ghost["pos"] == index:
+                            x += draw_ghost(ghost, x, height, top)
 
                 active = index == self._note_active
                 hovered = tab_state["hover"] == index
@@ -16661,6 +17923,42 @@ class StudesticsApp(tk.Tk):
                 else:
                     eased = 1.0
 
+                slot_x = x
+                is_drag = dragging and tab["id"] == drag["id"]
+                tg = ("dragtab",) if is_drag else ()
+
+                if dragging:
+
+                    if is_drag:
+
+                        if drag.get("settling"):
+
+                            gap = slot_x - drag["x"]
+
+                            if abs(gap) < 1.5:
+                                drag["x"] = slot_x
+                                drag["settled"] = True
+                            else:
+                                drag["x"] += gap * 0.4
+                                moving = True
+
+                        x = int(drag["x"])
+                        drag["width"] = width
+
+                    else:
+
+                        cur = tab_state["slide"].get(tab["id"], slot_x)
+
+                        if abs(slot_x - cur) < 1.0:
+                            cur = slot_x
+                        else:
+                            cur += (slot_x - cur) * 0.35
+                            moving = True
+
+                        tab_state["slide"][tab["id"]] = cur
+
+                        x = int(cur)
+
                 fill = (
                     PANEL_2 if active
                     else mix_color(BG, PANEL_2, 0.85 if hovered else 0.5)
@@ -16672,7 +17970,9 @@ class StudesticsApp(tk.Tk):
 
                 tab_state["imgs"].append(photo)
 
-                strip.create_image(x, top, anchor="nw", image=photo)
+                strip.create_image(
+                    x, top, anchor="nw", image=photo, tags=tg
+                )
 
                 mid = top + height / 2 + 1
 
@@ -16680,7 +17980,7 @@ class StudesticsApp(tk.Tk):
 
                     strip.create_oval(
                         x + 12, mid - 3, x + 18, mid + 3,
-                        fill=YELLOW, outline=""
+                        fill=YELLOW, outline="", tags=tg
                     )
 
                 text_t = max(0.0, (eased - 0.5) / 0.5)
@@ -16688,7 +17988,7 @@ class StudesticsApp(tk.Tk):
                 strip.create_text(
                     x + 16 + (12 if dirty else 0), mid,
                     anchor="w", text=name if text_t > 0 else "",
-                    font=tab_font,
+                    font=tab_font, tags=tg,
                     fill=mix_color(
                         fill, TEXT if active else MUTED, text_t
                     )
@@ -16707,7 +18007,7 @@ class StudesticsApp(tk.Tk):
 
                 entry["close"] = f"tabclose{index}"
 
-                if text_t > 0:
+                if text_t > 0 and len(tabs) > 1:
 
                     cxx = x + width - 20
 
@@ -16718,7 +18018,7 @@ class StudesticsApp(tk.Tk):
 
                         strip.create_line(
                             *coords, width=1.4, fill=fill,
-                            tags=(entry["close"],)
+                            tags=(entry["close"],) + tg
                         )
 
                 strip.itemconfigure(
@@ -16727,11 +18027,31 @@ class StudesticsApp(tk.Tk):
 
                 tab_state["layout"].append(entry)
 
-                x += width + 3
+                x = slot_x + width + 3
 
-            for ghost in tab_state["ghosts"]:
-                if ghost["pos"] >= len(tabs):
-                    x += draw_ghost(ghost, x, height, top)
+            if dragging:
+
+                strip.tag_raise("dragtab")
+
+                if tab_state["slide_job"] is None and (
+                    moving or drag.get("settled")
+                ):
+
+                    def frame():
+                        tab_state["slide_job"] = None
+                        if tab_state["drag"] is not None \
+                                and tab_state["drag"].get("settled"):
+                            finish_drag()
+                        else:
+                            render_tabs()
+
+                    tab_state["slide_job"] = strip.after(16, frame)
+
+            else:
+
+                for ghost in tab_state["ghosts"]:
+                    if ghost["pos"] >= len(tabs):
+                        x += draw_ghost(ghost, x, height, top)
 
             # The "+" that adds a new tab.
             size = 28
@@ -16778,6 +18098,10 @@ class StudesticsApp(tk.Tk):
 
         def over_close(entry, x):
 
+            # The only open tab has no close button.
+            if len(tabs) < 2:
+                return False
+
             if entry is None or x < entry["x1"] - 32:
                 return False
 
@@ -16791,7 +18115,151 @@ class StudesticsApp(tk.Tk):
 
             return bool(zone and zone[0] <= x < zone[1])
 
+        def drag_order(drag):
+
+            """Slot order for the tabs given where the dragged one is."""
+
+            widths = {
+                e["index"]: e["x1"] - e["x0"]
+                for e in tab_state["layout"]
+            }
+
+            di = drag["index"]
+            n = len(tabs)
+
+            # Where each tab sits when nothing is being dragged.
+            natural = {}
+            pos = 2
+
+            for i in range(n):
+                natural[i] = pos
+                pos += widths.get(i, 100) + 3
+
+            left = drag["x"]
+            right = left + widths.get(di, 100)
+
+            front = []
+            back = []
+
+            for i in range(n):
+
+                if i == di:
+                    continue
+
+                centre = natural[i] + widths.get(i, 100) / 2
+
+                if i < di:
+
+                    # Passed only once the dragged tab's left edge has
+                    # crossed this tab's middle.
+                    (back if left < centre else front).append(i)
+
+                else:
+
+                    (front if right > centre else back).append(i)
+
+            front.sort()
+            back.sort()
+
+            return front + [di] + back
+
+        def finish_drag():
+
+            drag = tab_state["drag"]
+
+            tab_state["drag"] = None
+            tab_state["press"] = None
+            tab_state["slide"] = {}
+
+            if drag is None or not drag["moved"]:
+                return
+
+            if len(drag["order"]) == len(tabs):
+
+                active_id = tabs[self._note_active]["id"]
+
+                capture()
+
+                tabs[:] = [tabs[i] for i in drag["order"]]
+
+                for i, t in enumerate(tabs):
+                    if t["id"] == active_id:
+                        self._note_active = i
+
+                store_draft()
+
+            strip.configure(cursor="")
+
+            render_tabs()
+
+        def tabs_drag(event):
+
+            press = tab_state["press"]
+
+            if press is None:
+                return
+
+            drag = tab_state["drag"]
+
+            if drag is None:
+
+                if abs(event.x - press["x"]) < 6:
+                    return
+
+                entry = next(
+                    (e for e in tab_state["layout"]
+                     if e["index"] == press["index"]), None
+                )
+
+                if entry is None:
+                    return
+
+                drag = tab_state["drag"] = {
+                    "index": press["index"], "id": press["id"],
+                    "grab": press["x"] - entry["x0"],
+                    "width": entry["x1"] - entry["x0"],
+                    "x": entry["x0"], "moved": True,
+                    "order": list(range(len(tabs)))
+                }
+
+                tab_state["slide"] = {
+                    tabs[e["index"]]["id"]: e["x0"]
+                    for e in tab_state["layout"]
+                }
+
+                tab_state["hover"] = None
+                tab_state["close_hover"] = False
+                strip.configure(cursor="fleur")
+
+            if drag.get("settling"):
+                return
+
+            limit = max(
+                2, (tab_state["plus"][0] if tab_state["plus"]
+                    else strip.winfo_width()) - drag["width"] - 8
+            )
+
+            drag["x"] = min(limit, max(2, event.x - drag["grab"]))
+            drag["order"] = drag_order(drag)
+
+            render_tabs()
+
+        def tabs_release(event):
+
+            drag = tab_state["drag"]
+
+            if drag is None:
+                tab_state["press"] = None
+                return
+
+            drag["settling"] = True
+
+            render_tabs()
+
         def tabs_motion(event):
+
+            if tab_state["drag"] is not None:
+                return
 
             entry = tab_at(event.x)
 
@@ -16841,9 +18309,16 @@ class StudesticsApp(tk.Tk):
             if over_close(entry, event.x):
                 close_tab(entry["index"])
             else:
+                tab_state["press"] = {
+                    "x": event.x, "index": entry["index"],
+                    "id": tabs[entry["index"]]["id"]
+                }
                 switch_to(entry["index"])
 
         def tabs_middle(event):
+
+            if tab_state["drag"] is not None:
+                return
 
             entry = tab_at(event.x)
 
@@ -16854,6 +18329,8 @@ class StudesticsApp(tk.Tk):
         strip.bind("<Motion>", tabs_motion)
         strip.bind("<Leave>", tabs_leave)
         strip.bind("<Button-1>", tabs_click)
+        strip.bind("<B1-Motion>", tabs_drag)
+        strip.bind("<ButtonRelease-1>", tabs_release)
         strip.bind("<Button-2>", tabs_middle)
 
         def redraw_tabs_soon():
@@ -17150,6 +18627,10 @@ class StudesticsApp(tk.Tk):
             if not 0 <= index < len(tabs):
                 return "break"
 
+            # The last open tab stays; open another tab to close it.
+            if len(tabs) < 2:
+                return "break"
+
             capture()
 
             tab = tabs[index]
@@ -17289,7 +18770,27 @@ class StudesticsApp(tk.Tk):
         editor.bind("<Control-n>", new_tab)
         editor.bind("<Control-t>", new_tab)
         editor.bind("<Control-w>", close_current)
+        def jump_to(number):
+
+            def go(event=None):
+
+                if tabs:
+
+                    # Ctrl+9 goes to the last tab, like in a browser.
+                    target = len(tabs) - 1 if number == 9 else number - 1
+
+                    if target < len(tabs) and target != self._note_active:
+                        switch_to(target)
+
+                return "break"
+
+            return go
+
+        for number in range(1, 10):
+            editor.bind(f"<Control-Key-{number}>", jump_to(number))
+
         editor.bind("<Control-Tab>", next_tab(1))
+
         editor.bind("<Control-Shift-Tab>", next_tab(-1))
         editor.bind("<Control-ISO_Left_Tab>", next_tab(-1))
         editor.bind("<Destroy>", on_destroy)
@@ -24324,9 +25825,9 @@ class StudesticsApp(tk.Tk):
             bg=PANEL_2,
             fg=MUTED_2,
             insertbackground=TEXT,
-            selectbackground=PURPLE_HOVER,
-            selectforeground=TEXT,
-            inactiveselectbackground=PURPLE_HOVER,
+            selectbackground=SELECT_BG_HOVER,
+            selectforeground=SELECT_FG_HOVER,
+            inactiveselectbackground=SELECT_BG_HOVER,
             relief="flat",
             bd=0,
             font=(UI_FONT, 10),
@@ -24694,26 +26195,12 @@ class StudesticsApp(tk.Tk):
 
         if HAS_PIL and size > 2:
 
-            scale = 4
-            big = size * scale
-
-            img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-
-            draw.ellipse(
-                [0, 0, big - 1, big - 1],
-                fill=PURPLE_HOVER
-            )
-
-            cx = cy = big / 2
-            s = big * 0.28
-
-            draw.polygon(
-                sparkle_points(cx, cy, s),
-                fill="#FFFFFF"
-            )
-
-            img = img.resize((size, size), Image.LANCZOS)
+            # The AI's picture is the little yellow blob, in every theme.
+            import base64
+            import io
+            img = Image.open(
+                io.BytesIO(base64.b64decode(_LOGO_BLOB_B64))
+            ).convert("RGBA").resize((size, size), Image.LANCZOS)
 
             photo = ImageTk.PhotoImage(img)
 
@@ -24979,9 +26466,11 @@ class StudesticsApp(tk.Tk):
                         canvas, word, x, y, font_obj, fg_color
                     )
 
+                    item_id = None
+
                 else:
 
-                    canvas.create_text(
+                    item_id = canvas.create_text(
                         x,
                         y,
                         text=word,
@@ -24999,7 +26488,10 @@ class StudesticsApp(tk.Tk):
                     "w": word_w,
                     "h": line_height - line_gap,
                     "text": word,
-                    "line": line_no
+                    "line": line_no,
+                    "id": item_id,
+                    "fg": fg_color,
+                    "pitch": line_height
                 })
 
                 x += word_w
@@ -25122,10 +26614,40 @@ class StudesticsApp(tk.Tk):
 
             canvas.delete("sel")
 
+            # Selected words take the selection's text colour (themes
+            # with a very light highlight need dark text on it).
+            for w in canvas._words:
+
+                if w.get("id"):
+                    canvas.itemconfigure(w["id"], fill=w["fg"])
+
             if canvas._sel is None:
                 return
 
             lo, hi = sorted(canvas._sel)
+
+            own = getattr(canvas, "_bubble_bg", None) == PURPLE
+
+            if _SOFT_SELECT:
+
+                highlight = (
+                    _theme_mix(PURPLE, BG, 0.45) if own else SELECT_BG
+                )
+
+                for index in range(lo, hi + 1):
+
+                    w = canvas._words[index]
+
+                    if w.get("id"):
+                        canvas.itemconfigure(
+                            w["id"],
+                            fill="#FFFFFF" if own else SELECT_FG
+                        )
+
+            else:
+                highlight = (
+                    _theme_mix(PURPLE, TEXT, 0.4) if own else PURPLE
+                )
 
             for index in range(lo, hi + 1):
 
@@ -25140,18 +26662,14 @@ class StudesticsApp(tk.Tk):
                     if nxt["line"] == w["line"]:
                         x2 = nxt["x"]
 
+                # Full line height, so selected lines touch each other
+                # with no gaps, like in the Notes editor.
                 canvas.create_rectangle(
                     w["x"] - 1,
                     w["y"] - 1,
                     x2,
-                    w["y"] + w["h"] + 2,
-                    fill=(
-                        # Your own (purple) bubbles need a lighter
-                        # highlight, or it would vanish into them.
-                        _theme_mix(PURPLE, TEXT, 0.4)
-                        if getattr(canvas, "_bubble_bg", None) == PURPLE
-                        else PURPLE
-                    ),
+                    w["y"] - 1 + w.get("pitch", w["h"] + 3),
+                    fill=highlight,
                     outline="",
                     tags="sel"
                 )
@@ -25386,6 +26904,15 @@ class StudesticsApp(tk.Tk):
 
         if not is_user and content.strip():
             self._add_copy_label(holder, lambda: content)
+
+            # The copy icon sits under the bubble, so lift the picture
+            # to line up with the bubble's bottom edge, not the icon's.
+            try:
+                avatar.pack_configure(
+                    pady=(0, holder.winfo_children()[-1].winfo_reqheight() + 3)
+                )
+            except Exception:
+                pass
 
         return canvas
 
@@ -26827,7 +28354,14 @@ class StudesticsApp(tk.Tk):
         for column in range(4):
             tabs.grid_columnconfigure(column, weight=1, uniform="emoji_tab")
 
-        grid = tk.Frame(body, bg=PANEL_2)
+        cols = 8
+        cell_px = 40
+
+        grid = tk.Canvas(
+            body, width=cols * cell_px, height=8 * cell_px,
+            bg=PANEL_2, highlightthickness=0, bd=0,
+            yscrollincrement=cell_px // 2, cursor="hand2"
+        )
 
         grid.pack(padx=8, pady=(4, 8))
 
@@ -26857,9 +28391,6 @@ class StudesticsApp(tk.Tk):
 
             self.insert_emoji(char)
 
-        cols = 8
-        cell_px = 40
-
         state = {"tab": 0}
 
         tab_canvases = []
@@ -26877,58 +28408,55 @@ class StudesticsApp(tk.Tk):
                     fg="#FFFFFF" if chosen else MUTED
                 )
 
-            for child in grid.winfo_children():
-                child.destroy()
+            grid.delete("all")
+
+            grid.yview_moveto(0)
 
             _icon, name, chars = EMOJI_CATEGORIES[tab_index]
 
             title.configure(text="")
 
-            for index, char in enumerate(chars.split()):
+            items = chars.split()
+
+            state["items"] = items
+            state["photos"] = []
+
+            rows = -(-len(items) // cols)
+
+            grid.configure(
+                scrollregion=(
+                    0, 0, cols * cell_px, max(rows, 8) * cell_px
+                )
+            )
+
+            grid.create_rectangle(
+                0, 0, 0, 0, fill=HOVER_BG, outline="",
+                tags="hover", state="hidden"
+            )
+
+            for index, char in enumerate(items):
+
+                x = (index % cols) * cell_px + cell_px // 2
+                y = (index // cols) * cell_px + cell_px // 2
 
                 pil = emoji_image(char, 28)
 
-                cell = tk.Canvas(
-                    grid,
-                    width=cell_px,
-                    height=cell_px,
-                    bg=PANEL_2,
-                    highlightthickness=0,
-                    bd=0,
-                    cursor="hand2"
-                )
-
-                cell.grid(
-                    row=index // cols,
-                    column=index % cols,
-                    padx=1,
-                    pady=1
-                )
-
                 if pil is not None:
 
-                    cell._photo = ImageTk.PhotoImage(pil)
+                    photo = ImageTk.PhotoImage(pil)
 
-                    cell.create_image(
-                        cell_px // 2, cell_px // 2, image=cell._photo
-                    )
+                    state["photos"].append(photo)
+
+                    grid.create_image(x, y, image=photo)
 
                 else:
 
-                    cell.create_text(
-                        cell_px // 2, cell_px // 2,
+                    grid.create_text(
+                        x, y,
                         text=char[0] if ord(char[0]) < 0x10000 else "\u25AF",
                         fill=TEXT,
                         font=(UI_FONT, 14)
                     )
-
-                cell.bind(
-                    "<Enter>", lambda e, c=cell: c.configure(bg=HOVER_BG)
-                )
-                cell.bind(
-                    "<Leave>", lambda e, c=cell: c.configure(bg=PANEL_2)
-                )
-                cell.bind("<Button-1>", lambda e, ch=char: pick(ch))
 
             popup.update_idletasks()
 
@@ -26951,6 +28479,56 @@ class StudesticsApp(tk.Tk):
             )
 
             popup.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+        def cell_at(event):
+
+            col = int(grid.canvasx(event.x)) // cell_px
+            row = int(grid.canvasy(event.y)) // cell_px
+
+            index = row * cols + col
+
+            if 0 <= col < cols and 0 <= index < len(state.get("items", [])):
+                return col, row, index
+
+            return None
+
+        def on_move(event):
+
+            hit = cell_at(event)
+
+            if hit is None:
+                grid.itemconfigure("hover", state="hidden")
+                return
+
+            col, row, _index = hit
+
+            grid.coords(
+                "hover",
+                col * cell_px + 1, row * cell_px + 1,
+                (col + 1) * cell_px - 1, (row + 1) * cell_px - 1
+            )
+
+            grid.itemconfigure("hover", state="normal")
+
+        def on_click(event):
+
+            hit = cell_at(event)
+
+            if hit is not None:
+                pick(state["items"][hit[2]])
+
+        grid.bind("<Motion>", on_move)
+        grid.bind("<Leave>", lambda e: grid.itemconfigure(
+            "hover", state="hidden"
+        ))
+        grid.bind("<Button-1>", on_click)
+
+        popup.bind(
+            "<MouseWheel>",
+            lambda e: grid.yview_scroll(
+                int(-e.delta / 120) * 2, "units"
+            )
+        )
 
         for index, (icon, name, chars) in enumerate(EMOJI_CATEGORIES):
 
@@ -31848,6 +33426,41 @@ class StudesticsApp(tk.Tk):
 
         self.show_page("Settings")
 
+    def _apply_theme_font(self, name):
+        """Picking a theme that has its own typeface switches the font
+        to it (after a restart); picking another theme puts back the
+        font that was in use before."""
+
+        try:
+
+            theme_fonts = {
+                t["font"] for t in THEMES.values() if t.get("font")
+            }
+
+            current = self.db.get_setting("ui_font", DEFAULT_FONT)
+            theme = THEMES.get(name, {})
+
+            if theme.get("font"):
+
+                if (
+                    _find_font_file(theme.get("font_file", ""))
+                    and current != theme["font"]
+                ):
+
+                    if current not in theme_fonts:
+                        self.db.set_setting("ui_font_before_theme", current)
+
+                    self.db.set_setting("ui_font", theme["font"])
+
+            elif current in theme_fonts:
+
+                before = self.db.get_setting("ui_font_before_theme", "")
+
+                self.db.set_setting("ui_font", before or DEFAULT_FONT)
+
+        except Exception:
+            pass
+
     def remove_custom_theme(self, name):
         """Deletes a theme the user added (its file in the themes
         folder). The built-in themes can't be removed."""
@@ -32780,11 +34393,14 @@ class StudesticsApp(tk.Tk):
 
         return outer
 
-    def _draw_theme_tile(self, canvas, name, selected, t=None):
+    def _draw_theme_tile(self, canvas, name, selected, t=None, fade=0.0):
         """One theme preview tile."""
 
 
         t = t or THEMES[name]
+
+        def m(colour):
+            return _theme_mix(colour, PANEL, fade) if fade > 0 else colour
 
         canvas.delete("all")
 
@@ -32792,14 +34408,14 @@ class StudesticsApp(tk.Tk):
 
         canvas.create_rectangle(
             1, 1, w - 1, h - 1,
-            fill=t["bg"],
-            outline=t["accent_hover"] if selected else t["border"],
+            fill=m(t["bg"]),
+            outline=m(t["accent_hover"]) if selected else m(t["border"]),
             width=3 if selected else 1
         )
 
         canvas.create_rectangle(
             4, 4, 28, h - 4,
-            fill=t["sidebar"],
+            fill=m(t["sidebar"]),
             outline=""
         )
 
@@ -32807,46 +34423,56 @@ class StudesticsApp(tk.Tk):
 
             canvas.create_rectangle(
                 8, 12 + i * 14, 24, 20 + i * 14,
-                fill=t["accent_hover"] if i == 0 else t["border"],
+                fill=m(t["accent_hover"]) if i == 0 else m(t["border"]),
                 outline=""
             )
 
         canvas.create_rectangle(
             36, 10, w - 10, 34,
-            fill=t["panel2"],
+            fill=m(t["panel2"]),
             outline=""
         )
 
         canvas.create_rectangle(
             44, 17, 78, 21,
-            fill=t["text"],
+            fill=m(t["text"]),
             outline=""
         )
 
         canvas.create_rectangle(
             44, 25, 64, 28,
-            fill=t["muted"],
+            fill=m(t["muted"]),
             outline=""
         )
 
         canvas.create_rectangle(
             36, 42, w - 10, 66,
-            fill=t["panel2"],
+            fill=m(t["panel2"]),
             outline=""
         )
 
         canvas.create_rectangle(
             w - 52, 49, w - 18, 59,
-            fill=t["accent"],
+            fill=m(t["accent"]),
             outline=""
         )
 
         # The theme's logo, small, in the top right corner.
         if HAS_PIL:
 
-            canvas.logo_photo = ImageTk.PhotoImage(
-                app_icon_image(18, name)
-            )
+            logo = app_icon_image(18, name).convert("RGBA")
+
+            if fade > 0:
+
+                ground = Image.new(
+                    "RGBA", logo.size, _theme_rgb(PANEL) + (255,)
+                )
+
+                logo = Image.blend(
+                    Image.alpha_composite(ground, logo), ground, fade
+                )
+
+            canvas.logo_photo = ImageTk.PhotoImage(logo)
 
             canvas.create_image(
                 w - 30, 13, anchor="nw", image=canvas.logo_photo
@@ -32898,6 +34524,8 @@ class StudesticsApp(tk.Tk):
 
             self.db.set_setting("theme", name)
 
+            self._apply_theme_font(name)
+
             for other, canvas in canvases.items():
                 draw(other, canvas, other == name)
 
@@ -32916,96 +34544,276 @@ class StudesticsApp(tk.Tk):
                     fill="x", padx=25, pady=(4, 16)
                 )
 
-        shown = 0
-        row = None
+        fades = {}
+        labels = {}
+        strips = []
 
-        for name in list(THEMES):
+        def tile_draw(name):
 
-            if name.startswith("__") or name in REMOVED_THEMES:
-                continue
+            if name in canvases:
 
-            if shown % 9 == 0:
-
-                row = tk.Frame(tiles, bg=PANEL)
-
-                row.pack(anchor="w", pady=(0, 6))
-
-            shown += 1
-
-            cell = tk.Frame(row, bg=PANEL)
-
-            cell.pack(side="left", padx=4, anchor="n")
-
-            canvas = tk.Canvas(
-                cell,
-                width=126,
-                height=78,
-                bg=PANEL,
-                highlightthickness=0,
-                bd=0,
-                cursor="hand2"
-            )
-
-            canvas.pack()
-
-            canvases[name] = canvas
-
-            draw(name, canvas, name == saved)
-
-            canvas.bind("<Button-1>", lambda e, n=name: choose(n))
-
-            label = tk.Label(
-                cell,
-                text=name,
-                bg=PANEL,
-                fg=TEXT,
-                font=(UI_FONT, 9),
-                cursor="hand2"
-            )
-
-            label.pack(pady=(4, 0))
-
-            label.bind("<Button-1>", lambda e, n=name: choose(n))
-
-            if name in CUSTOM_THEME_FILES:
-
-                pill = tk.Canvas(
-                    cell,
-                    width=64,
-                    height=20,
-                    bg=PANEL,
-                    highlightthickness=0,
-                    bd=0,
-                    cursor="hand2"
+                self._draw_theme_tile(
+                    canvases[name], name, name == state["selected"],
+                    fade=fades.get(name, 0.0)
                 )
 
-                pill.pack(pady=(5, 0))
-
-                def paint(hover, c=pill):
-
-                    c.delete("all")
-
-                    self._draw_bubble_background(
-                        c, 64, 20, 10,
-                        DANGER_HOVER if hover else PANEL_2
+                if name in labels:
+                    labels[name].configure(
+                        fg=_theme_mix(TEXT, PANEL, fades.get(name, 0.0))
                     )
 
-                    c.create_text(
-                        32, 10,
-                        text="Remove",
-                        fill="#FFFFFF" if hover else MUTED,
-                        font=(UI_FONT, 8)
-                    )
+        state = {"selected": saved}
 
-                paint(False)
+        draw = lambda name, canvas, selected: tile_draw(name)  # noqa
 
-                pill.bind("<Enter>", lambda e, f=paint: f(True))
-                pill.bind("<Leave>", lambda e, f=paint: f(False))
+        def choose(name):
 
-                pill.bind(
-                    "<Button-1>",
-                    lambda e, n=name: self.remove_custom_theme(n)
+            self.db.set_setting("theme", name)
+
+            self._apply_theme_font(name)
+
+            state["selected"] = name
+
+            for other in list(canvases):
+                tile_draw(other)
+
+            if name == THEME_NAME:
+
+                hint_var.set("")
+                restart_row.pack_forget()
+
+            else:
+
+                hint_var.set(
+                    f"{name} will be used after a restart."
                 )
+
+                restart_row.pack(
+                    fill="x", padx=25, pady=(4, 16)
+                )
+
+        def build_strip(names, empty_text):
+            """One row of theme tiles that scrolls sideways, fading at
+            whichever edge has more tiles beyond it."""
+
+            if not names:
+
+                tk.Label(
+                    tiles, text=empty_text, bg=PANEL, fg=MUTED_2,
+                    font=(UI_FONT, 9)
+                ).pack(anchor="w", padx=4, pady=(0, 10))
+
+                return
+
+            view = tk.Canvas(
+                tiles, bg=PANEL, highlightthickness=0, bd=0,
+                xscrollincrement=1, height=110
+            )
+
+            view.pack(fill="x", pady=(0, 8))
+
+            inner = tk.Frame(view, bg=PANEL)
+
+            view.create_window(0, 0, window=inner, anchor="nw")
+
+            info = {"names": names, "cells": {}}
+
+            def total_width():
+                return inner.winfo_reqwidth()
+
+            def offset():
+                return int(view.canvasx(0))
+
+            def max_offset():
+                return max(0, total_width() - view.winfo_width())
+
+            def refresh_fades():
+
+                vw = view.winfo_width()
+                off = offset()
+                limit = max_offset()
+                zone = 90
+
+                for tile_name, cell in info["cells"].items():
+
+                    x0 = cell.winfo_x() - off
+                    x1 = x0 + cell.winfo_width()
+
+                    amount = 0.0
+
+                    if limit > 0 and off < limit:
+                        amount = max(
+                            amount, min(1.0, max(0.0, (x1 - (vw - zone)) / zone))
+                        )
+
+                    if off > 0:
+                        amount = max(
+                            amount, min(1.0, max(0.0, (zone - x0) / zone))
+                        )
+
+                    amount = round(amount * 0.7, 1)
+
+                    if fades.get(tile_name, 0.0) != amount:
+
+                        fades[tile_name] = amount
+                        tile_draw(tile_name)
+
+            def scroll_by(pixels):
+
+                target = max(0, min(max_offset(), offset() + pixels))
+
+                view.xview_moveto(
+                    target / max(1, total_width())
+                )
+
+                refresh_fades()
+
+            def wheel(event):
+
+                if max_offset() <= 0:
+                    return None
+
+                scroll_by(-int(event.delta / 120 * 90))
+
+                return "break"
+
+            def layout(event=None):
+
+                view.configure(
+                    scrollregion=(0, 0, total_width(), inner.winfo_reqheight()),
+                    height=inner.winfo_reqheight()
+                )
+
+                if offset() > max_offset():
+                    scroll_by(0)
+
+                refresh_fades()
+
+            def attach(widget):
+
+                widget.bind("<MouseWheel>", wheel)
+                widget.bind("<Shift-MouseWheel>", wheel)
+
+                for child in widget.winfo_children():
+                    attach(child)
+
+            for tile_name in names:
+
+                cell = tk.Frame(inner, bg=PANEL)
+
+                cell.pack(side="left", padx=4, anchor="n")
+
+                info["cells"][tile_name] = cell
+
+                canvas = tk.Canvas(
+                    cell, width=126, height=78, bg=PANEL,
+                    highlightthickness=0, bd=0, cursor="hand2"
+                )
+
+                canvas.pack()
+
+                canvases[tile_name] = canvas
+
+                canvas.bind("<Button-1>", lambda e, n=tile_name: choose(n))
+
+                label = tk.Label(
+                    cell, text=tile_name, bg=PANEL, fg=TEXT,
+                    font=(UI_FONT, 9), cursor="hand2"
+                )
+
+                label.pack(pady=(4, 0))
+
+                label.bind("<Button-1>", lambda e, n=tile_name: choose(n))
+
+                labels[tile_name] = label
+
+                tile_draw(tile_name)
+
+                if tile_name in CUSTOM_THEME_FILES:
+
+                    pill = tk.Canvas(
+                        cell, width=64, height=20, bg=PANEL,
+                        highlightthickness=0, bd=0, cursor="hand2"
+                    )
+
+                    pill.pack(pady=(5, 0))
+
+                    def paint(hover, c=pill):
+
+                        c.delete("all")
+
+                        self._draw_bubble_background(
+                            c, 64, 20, 10,
+                            DANGER_HOVER if hover else PANEL_2
+                        )
+
+                        c.create_text(
+                            32, 10, text="Remove",
+                            fill="#FFFFFF" if hover else MUTED,
+                            font=(UI_FONT, 8)
+                        )
+
+                    paint(False)
+
+                    pill.bind("<Enter>", lambda e, f=paint: f(True))
+                    pill.bind("<Leave>", lambda e, f=paint: f(False))
+
+                    pill.bind(
+                        "<Button-1>",
+                        lambda e, n=tile_name: self.remove_custom_theme(n)
+                    )
+
+            attach(view)
+            attach(inner)
+
+            inner.bind("<Configure>", layout)
+            view.bind("<Configure>", layout)
+
+            def reveal_selected():
+
+                try:
+
+                    cell = info["cells"].get(state["selected"])
+
+                    if cell is None:
+                        return
+
+                    layout()
+
+                    right = cell.winfo_x() + cell.winfo_width()
+
+                    if right > view.winfo_width():
+                        scroll_by(right - view.winfo_width() + 40)
+
+                except Exception:
+                    pass
+
+            view.after(60, reveal_selected)
+
+            strips.append(view)
+
+        visible = [
+            n for n in THEMES
+            if not n.startswith("__") and n not in REMOVED_THEMES
+        ]
+
+        built_in = [n for n in visible if n not in CUSTOM_THEME_FILES]
+        yours = [n for n in visible if n in CUSTOM_THEME_FILES]
+
+        def section_label(text):
+
+            tk.Label(
+                tiles, text=text.upper(), bg=PANEL, fg=MUTED_2,
+                font=(UI_FONT, 8, "bold")
+            ).pack(anchor="w", padx=4, pady=(0, 6))
+
+        section_label("App themes")
+
+        build_strip(built_in, "")
+
+        section_label("Your themes")
+
+        build_strip(yours, "Themes you add or import show up here.")
 
         actions = tk.Frame(card, bg=PANEL)
 
@@ -33578,7 +35386,7 @@ class StudesticsApp(tk.Tk):
 
             self.db.set_setting("ui_font", name)
 
-            if name == UI_FONT:
+            if name == _FONT_SETTING:
                 say("")
             else:
                 say(
@@ -33898,7 +35706,7 @@ class StudesticsApp(tk.Tk):
 
         font_var.set(saved)
 
-        if saved != UI_FONT:
+        if saved != _FONT_SETTING:
 
             say(
                 f"{saved} will be used after a restart.",
@@ -35078,24 +36886,22 @@ class StudesticsApp(tk.Tk):
         self.after(20000, self._reminder_tick)
         self.after(15000, self._schedule_tick)
 
+    def _reminder_start(self, task, now):
+        """When a task's reminder clock starts counting. Each priority
+        starts a few minutes apart, so Low, Medium and High never end
+        up ringing together."""
+
+        offset = {"High": 0, "Medium": 7, "Low": 13}.get(
+            task["priority"], 0
+        )
+
+        return now + offset * 60
+
     def _effective_interval(self, task):
-        """The reminder gap for a task, shorter as its deadline nears."""
+        """The reminder gap for a task: exactly what you set (the
+        priority's gap in Settings, or the task's own custom gap)."""
 
-        base = self.reminder_interval_minutes(task) * 60
-
-        dl = deadline_dt(task["deadline"])
-
-        if dl is not None:
-
-            secs = (dl - datetime.now()).total_seconds()
-
-            if 0 < secs <= 3 * 3600:
-                base = min(base, 20 * 60)
-
-            elif 0 < secs <= DUE_SOON_SECONDS:
-                base = min(base, 60 * 60)
-
-        return base
+        return self.reminder_interval_minutes(task) * 60
 
     def _deadline_sweep(self, pending):
         """Once per tick: delete overdue tasks (if that is switched
@@ -35934,7 +37740,11 @@ class StudesticsApp(tk.Tk):
                     # A task's clock starts the first time we see it
                     # (app start or task creation), so nothing fires
                     # the instant you open the app.
-                    last = self._reminder_last.setdefault(task_id, now)
+                    last = self._reminder_last.get(task_id)
+
+                    if last is None:
+                        last = self._reminder_last[task_id] = \
+                            self._reminder_start(task, now)
 
                     interval = self._effective_interval(task)
 
@@ -35945,6 +37755,28 @@ class StudesticsApp(tk.Tk):
 
                     if task_id not in seen:
                         del self._reminder_last[task_id]
+
+                # Never ring several priorities at once: only the most
+                # urgent group goes now, the rest wait their turn, and
+                # repeating pop-ups are kept at least 2.5 minutes apart.
+                if due:
+
+                    if now - getattr(self, "_reminder_shown_at", 0.0) < 150:
+
+                        due = []
+
+                    else:
+
+                        rank = {"High": 0, "Medium": 1, "Low": 2}
+                        first = min(
+                            rank.get(t["priority"], 3) for t in due
+                        )
+                        due = [
+                            t for t in due
+                            if rank.get(t["priority"], 3) == first
+                        ]
+
+                        self._reminder_shown_at = now
 
                 if due or once_due:
 
@@ -36405,7 +38237,10 @@ class StudesticsApp(tk.Tk):
 
                 for item in data.get("assets", []):
 
-                    if str(item.get("name", "")).lower().endswith(".exe"):
+                    name = str(item.get("name", "")).lower()
+
+                    # The installer is for new installs, not for updates.
+                    if name.endswith(".exe") and "setup" not in name:
 
                         asset = item
                         break
@@ -37336,6 +39171,13 @@ class StudesticsApp(tk.Tk):
             self.lift()
             self.focus_force()
 
+            if was_hidden:
+
+                try:
+                    self.update()
+                except Exception:
+                    pass
+
         except Exception:
             pass
 
@@ -37679,6 +39521,101 @@ class StudesticsApp(tk.Tk):
         except Exception:
             pass
 
+    def _sync_shortcut_icons(self):
+        """Gives the app's shortcuts (desktop, Start menu, pinned to
+        the taskbar) the current theme's logo. Windows only, and only
+        for the installed .exe; runs once per theme, in the
+        background."""
+
+        try:
+
+            if (
+                not HAS_PIL
+                or not getattr(sys, "frozen", False)
+                or os.name != "nt"
+            ):
+                return
+
+            safe = re.sub(r"[^\w-]+", "_", THEME_NAME) or "theme"
+
+            ico = APP_DIR / f"logo_{safe}.ico"
+
+            app_icon_image(256).save(
+                str(ico), format="ICO",
+                sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
+                       (64, 64), (128, 128), (256, 256)]
+            )
+
+            script = (
+                "$sh = New-Object -ComObject WScript.Shell\n"
+                "$exe = $env:STUDESTICS_EXE\n"
+                "$ico = $env:STUDESTICS_ICO\n"
+                "$dirs = @(\n"
+                "  [Environment]::GetFolderPath('Desktop'),\n"
+                "  [Environment]::GetFolderPath('CommonDesktopDirectory'),\n"
+                "  [Environment]::GetFolderPath('Programs'),\n"
+                "  [Environment]::GetFolderPath('CommonPrograms'),\n"
+                "  (Join-Path $env:APPDATA 'Microsoft\\Internet Explorer"
+                "\\Quick Launch\\User Pinned\\TaskBar')\n"
+                ")\n"
+                "foreach ($d in $dirs) {\n"
+                "  if (-not $d -or -not (Test-Path $d)) { continue }\n"
+                "  Get-ChildItem -Path $d -Filter *.lnk -Recurse "
+                "-ErrorAction SilentlyContinue | ForEach-Object {\n"
+                "    try {\n"
+                "      $l = $sh.CreateShortcut($_.FullName)\n"
+                "      if ((Split-Path $l.TargetPath -Leaf) -ieq "
+                "(Split-Path $exe -Leaf)) {\n"
+                "        if ($l.IconLocation -ieq ($ico + ',0')) { return }\n"
+                "        $l.IconLocation = $ico\n"
+                "        $l.Save()\n"
+                "        Write-Output ('updated ' + $_.FullName)\n"
+                "      }\n"
+                "    } catch {}\n"
+                "  }\n"
+                "}\n"
+            )
+
+            env = dict(os.environ)
+            env["STUDESTICS_EXE"] = sys.executable
+            env["STUDESTICS_ICO"] = str(ico)
+
+            def work():
+
+                try:
+
+                    done = subprocess.run(
+                        ["powershell", "-NoProfile", "-NonInteractive",
+                         "-WindowStyle", "Hidden", "-Command", script],
+                        env=env, timeout=60,
+                        creationflags=0x08000000,
+                        capture_output=True, text=True
+                    )
+
+                    try:
+                        (APP_DIR / "icon_sync.log").write_text(
+                            f"exe: {sys.executable}\ntheme: {THEME_NAME}\n"
+                            f"{done.stdout}\n{done.stderr}",
+                            encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
+
+                    # Make Explorer redraw the icons (only if one changed).
+                    if "updated" in (done.stdout or ""):
+                        import ctypes
+                        ctypes.windll.shell32.SHChangeNotify(
+                            0x08000000, 0, None, None
+                        )
+
+                except Exception:
+                    pass
+
+            threading.Thread(target=work, daemon=True).start()
+
+        except Exception:
+            pass
+
     def _release_memory(self):
         """While the window is hidden in the tray, throw away the
         page that was on screen and the picture caches. The page is
@@ -37884,6 +39821,26 @@ class StudesticsApp(tk.Tk):
 
         self.after(1500, self._release_memory)
 
+        self._ensure_tray()
+
+    def _ensure_tray(self):
+        """Puts the app's icon in the system tray if it isn't there
+        yet (it stays there for as long as the app runs)."""
+
+        if pystray is None or not HAS_PIL or self._quitting:
+            return
+
+        # An icon whose thread died (Explorer restarted, say) is gone
+        # from the tray: make a fresh one.
+        thread = getattr(self, "_tray_thread", None)
+
+        if (
+            self._tray_icon is not None
+            and thread is not None
+            and not thread.is_alive()
+        ):
+            self._tray_icon = None
+
         if self._tray_icon is None:
 
             img = app_icon_image(64)
@@ -37949,10 +39906,30 @@ class StudesticsApp(tk.Tk):
                 menu
             )
 
-            threading.Thread(
+            self._tray_thread = threading.Thread(
                 target=self._tray_icon.run,
                 daemon=True
-            ).start()
+            )
+
+            self._tray_thread.start()
+
+    def _tray_watch(self):
+        """Every so often, make sure the tray icon is still there."""
+
+        try:
+
+            if (
+                not self._quitting
+                and self.db is not None
+                and self._run_in_background()
+            ):
+                self._ensure_tray()
+
+        except Exception:
+            pass
+
+        if not self._quitting:
+            self.after(20000, self._tray_watch)
 
     def close_app(self):
 

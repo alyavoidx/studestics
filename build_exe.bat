@@ -2,16 +2,18 @@
 REM Builds Studestics.exe  (run this next to Studestics.py and studestics.ico)
 REM Needs Python 3 on PATH. The finished file is dist\Studestics.exe
 
-python -m pip install --upgrade pyinstaller pillow pystray google-genai
+python -m pip   install --upgrade pyinstaller pillow pystray google-genai
 if errorlevel 1 goto :fail
 
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --name Studestics ^
   --icon studestics.ico ^
   --add-data "studestics.ico;." ^
+  --add-data "twemoji.zip;." ^
   --hidden-import pystray._win32 ^
   --collect-submodules google.genai ^
   --collect-data google.genai ^
+--add-data "ShareTechMono-Regular.ttf;." ^
   Studestics.py
 if errorlevel 1 goto :fail
 
